@@ -90,5 +90,8 @@ python main.py
 ## Notes
 
 - This starter is spot-oriented. A `SELL` signal will place a spot sell order and requires base asset inventory.
+- The bot only closes positions it created and tracks in memory. It does not liquidate arbitrary wallet balances.
+- Orders are treated as active positions only when Binance/CCXT returns `status=closed`.
+- Invalid symbols are skipped before any order is attempted.
 - Never run live trading before validating symbol precision, minimum order sizes, and exchange permissions.
 - Telegram confirmations expire after `POLL_INTERVAL_SECONDS` loop progress only by design; accepted signals execute immediately.

@@ -114,6 +114,9 @@ class TradingBot:
                 await self.telegram.send_trade_report(f"Error while processing {symbol}: {exc}")
 
     async def _process_symbol(self, symbol: str) -> None:
+        if not self.exchange.is_valid_symbol(symbol):
+            self.logger.warning("Invalid symbol skipped: %s", symbol)
+            return
         candle_limit = max(self.settings.breakout_lookback, self.settings.volume_lookback) + 5
         candles = await self.exchange.get_ohlcv(symbol, self.settings.timeframe, candle_limit)
         signal_result = self.signal_engine.analyze(symbol, candles)
@@ -143,6 +146,11 @@ class TradingBot:
             return
 
         order = await self.executor.execute(plan)
+        if order.get("status") != "closed":
+            await self.telegram.send_trade_report(
+                f"Entry order not filled for {plan.symbol}. Status: {order.get('status', 'unknown')}"
+            )
+            return
         await self.telegram.send_trade_report(
             f"Entry submitted for {plan.symbol} {plan.side} amount={plan.amount}. Order ID: {order.get('id', 'n/a')}"
         )
@@ -181,6 +189,16 @@ class TradingBot:
         self.logger.warning("Sleep mode countdown elapsed; final liquidation starting")
         try:
             await self.position_manager.close_all_positions()
+            positions = await self.position_manager.get_positions()
+            unresolved_positions = [position for position in positions if position.status != "closed"]
+            balance = await self.exchange.get_balance()
+            usdt_balance = balance.get("USDT", {})
+            self.logger.info("FINAL USDT BALANCE: %s", usdt_balance)
+            if unresolved_positions:
+                self.logger.error("Sleep mode exit incomplete; unresolved positions remain: %s", unresolved_positions)
+                self.trade_logger.log("sleep_exit", {"status": "manual_review", "details": "unresolved_positions_remain"})
+                await self.telegram.send_trade_report("Sleep mode exit requires manual review: unresolved positions remain.")
+                return
             self.trade_logger.log("sleep_exit", {"status": "closed", "details": "countdown_elapsed"})
             self.logger.info("Sleep mode final liquidation completed")
             if self.settings.test_mode:

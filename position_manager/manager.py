@@ -22,6 +22,7 @@ class OpenPosition:
     amount: float
     stop_loss: float
     take_profit: float
+    status: str = "open"
 
 
 class PositionManager:
@@ -44,15 +45,35 @@ class PositionManager:
         self._positions: list[OpenPosition] = []
         self._lock = asyncio.Lock()
 
-    async def add_position(self, plan: PositionPlan) -> OpenPosition:
+    async def add_position(
+        self,
+        plan: PositionPlan | None = None,
+        *,
+        symbol: str | None = None,
+        amount: float | None = None,
+        entry_price: float | None = None,
+        side: str = "BUY",
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> OpenPosition:
         """Add or replace a tracked position."""
+        if plan is not None:
+            symbol = plan.symbol
+            side = plan.side
+            entry_price = plan.entry_price
+            amount = plan.amount
+            stop_loss = plan.stop_loss
+            take_profit = plan.take_profit
+        if symbol is None or amount is None or entry_price is None:
+            raise ValueError("symbol, amount, and entry_price are required")
         position = OpenPosition(
-            symbol=plan.symbol,
-            side=plan.side.upper(),
-            entry_price=plan.entry_price,
-            amount=plan.amount,
-            stop_loss=plan.stop_loss,
-            take_profit=plan.take_profit,
+            symbol=symbol,
+            side=side.upper(),
+            entry_price=entry_price,
+            amount=amount,
+            stop_loss=stop_loss if stop_loss is not None else entry_price * 0.98,
+            take_profit=take_profit if take_profit is not None else entry_price * 1.04,
+            status="open",
         )
         async with self._lock:
             self._positions = [item for item in self._positions if item.symbol != position.symbol]
@@ -80,27 +101,52 @@ class PositionManager:
             self.logger.info("Position updated %s: %s", symbol, position)
             return position
 
+    async def update_position_status(self, symbol: str, status: str) -> OpenPosition | None:
+        """Update the lifecycle status for a tracked position."""
+        return await self.update_position(symbol, status=status)
+
     async def get_open_positions(self) -> list[OpenPosition]:
         """Return a snapshot of open positions."""
+        async with self._lock:
+            return [position for position in self._positions if position.status == "open"]
+
+    async def get_positions(self) -> list[OpenPosition]:
+        """Return all tracked positions, including closed/manual-review entries."""
         async with self._lock:
             return list(self._positions)
 
     async def close_position(self, symbol: str) -> dict[str, Any] | None:
         """Close and untrack one position with the opposite market order."""
         async with self._lock:
-            position = next((item for item in self._positions if item.symbol == symbol), None)
+            position = next((item for item in self._positions if item.symbol == symbol and item.status == "open"), None)
         if position is None:
             self.logger.warning("Close skipped: no tracked position for %s", symbol)
             return None
+        if not self.exchange.is_valid_symbol(position.symbol):
+            self.logger.warning("Invalid symbol skipped: %s", position.symbol)
+            await self.update_position_status(position.symbol, "manual_review")
+            return None
 
         self.logger.info("Closing position %s %s amount=%s", position.symbol, position.side, position.amount)
-        order = await self._retry_order(
-            position.symbol,
-            "SELL" if position.side == "BUY" else "BUY",
-            position.amount,
-        )
-        async with self._lock:
-            self._positions = [item for item in self._positions if item.symbol != symbol]
+        try:
+            order = await self._retry_order(
+                position.symbol,
+                "SELL" if position.side == "BUY" else "BUY",
+                position.amount,
+                attempts=2,
+            )
+        except Exception as exc:
+            self.logger.error("Close failed after retries %s: %s", symbol, exc)
+            await self.update_position_status(symbol, "manual_review")
+            return None
+        order_status = order.get("status")
+        if order_status != "closed":
+            self.logger.warning("Order not filled: %s close status=%s", symbol, order_status)
+            if order_status == "expired":
+                self.logger.error("Close order expired for %s; marking manual_review", symbol)
+                await self.update_position_status(symbol, "manual_review")
+            return order
+        await self.update_position_status(symbol, "closed")
         self.trade_logger.log(
             "exit",
             {
@@ -113,8 +159,8 @@ class PositionManager:
         return order
 
     async def close_all_positions(self) -> list[dict[str, Any]]:
-        """Close tracked positions and sell all non-USDT spot balances."""
-        self.logger.warning("Final liquidation started")
+        """Close only positions opened and tracked by this bot."""
+        self.logger.warning("Tracked-position liquidation started")
         results: list[dict[str, Any]] = []
         for position in await self.get_open_positions():
             try:
@@ -124,33 +170,7 @@ class PositionManager:
             except Exception as exc:  # noqa: BLE001 - continue closing other positions.
                 self.logger.exception("Failed to close tracked position %s: %s", position.symbol, exc)
 
-        balance = await self.exchange.get_balance()
-        total_balances = balance.get("total", {})
-        self.logger.debug("Liquidation balance snapshot: %s", total_balances)
-        for asset, raw_amount in total_balances.items():
-            if asset == "USDT":
-                continue
-            amount = float(raw_amount or 0)
-            if amount <= 0:
-                continue
-            symbol = f"{asset}/USDT"
-            try:
-                self.logger.info("Converting balance to USDT %s amount=%s", symbol, amount)
-                order = await self._retry_order(symbol, "SELL", amount)
-                results.append(order)
-                self.trade_logger.log(
-                    "balance_exit",
-                    {
-                        "symbol": symbol,
-                        "side": "SELL",
-                        "amount": amount,
-                        "status": order.get("status", "submitted"),
-                        "details": order.get("id", ""),
-                    },
-                )
-            except Exception as exc:  # noqa: BLE001 - pair may not exist or amount may be too small.
-                self.logger.warning("Non-tradable pair or low balance %s amount=%s: %s", symbol, amount, exc)
-        self.logger.warning("Final liquidation finished orders=%s", len(results))
+        self.logger.warning("Tracked-position liquidation finished orders=%s", len(results))
         return results
 
     async def tighten_positions(self) -> list[OpenPosition]:
@@ -214,6 +234,14 @@ class PositionManager:
                     continue
                 self.logger.info("SL/TP triggered %s reason=%s price=%s", position.symbol, reason, price)
                 order = await self.close_position(position.symbol)
+                if order is None or order.get("status") != "closed":
+                    self.logger.warning(
+                        "Position close not confirmed %s reason=%s order_status=%s",
+                        position.symbol,
+                        reason,
+                        order.get("status") if order else None,
+                    )
+                    continue
                 exits.append({"order": order, "reason": reason, "price": price, "symbol": position.symbol})
                 self.trade_logger.log(
                     "logic_exit",
@@ -228,14 +256,28 @@ class PositionManager:
                 self.logger.exception("Failed while monitoring %s: %s", position.symbol, exc)
         return exits
 
-    async def _retry_order(self, symbol: str, side: str, amount: float, attempts: int = 3) -> dict[str, Any]:
+    async def _retry_order(self, symbol: str, side: str, amount: float, attempts: int = 2) -> dict[str, Any]:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
                 self.logger.info("Order attempt %s/%s %s %s amount=%s", attempt, attempts, symbol, side, amount)
-                return await self.exchange.create_order(symbol, side, amount)
+                order = await self.exchange.create_order(symbol, side, amount)
+                status = order.get("status")
+                if status == "expired":
+                    self.logger.error("Order expired %s %s amount=%s", symbol, side, amount)
+                    last_error = RuntimeError(f"Order expired for {symbol}")
+                    if attempt >= attempts:
+                        return order
+                    continue
+                if status != "closed":
+                    self.logger.warning("Order not filled: %s status=%s", symbol, status)
+                    return order
+                return order
             except Exception as exc:  # noqa: BLE001 - exchange libraries raise broad errors.
                 last_error = exc
+                if "does not have market symbol" in str(exc):
+                    self.logger.warning("Invalid symbol skipped without retry: %s", symbol)
+                    break
                 self.logger.error(
                     "Order attempt %s/%s failed for %s %s amount=%s: %s",
                     attempt,

@@ -33,6 +33,11 @@ class BinanceClient:
             self.logger.info("Binance sandbox mode enabled")
         self.logger.info("Exchange client initialized | sandbox=%s | test_mode=%s", settings.binance_test_mode, settings.test_mode)
 
+    @property
+    def symbols(self) -> list[str]:
+        """Return loaded exchange symbols."""
+        return list(self.exchange.symbols or [])
+
     @staticmethod
     def _use_system_dns_resolver() -> None:
         """Force aiohttp to use the OS resolver instead of aiodns on Windows."""
@@ -75,6 +80,9 @@ class BinanceClient:
     async def get_price(self, symbol: str) -> float:
         """Return the latest traded price for a symbol."""
         try:
+            if not self.is_valid_symbol(symbol):
+                self.logger.warning("Invalid symbol skipped: %s", symbol)
+                raise ValueError(f"Invalid exchange symbol: {symbol}")
             ticker = await self.exchange.fetch_ticker(symbol)
             self.logger.debug("Raw ticker response %s: %s", symbol, ticker)
             price = ticker.get("last") or ticker.get("close")
@@ -96,6 +104,9 @@ class BinanceClient:
     ) -> list[list[float]]:
         """Fetch OHLCV candles from the exchange."""
         try:
+            if not self.is_valid_symbol(symbol):
+                self.logger.warning("Invalid symbol skipped: %s", symbol)
+                raise ValueError(f"Invalid exchange symbol: {symbol}")
             candles = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
             self.logger.debug("Fetched OHLCV %s timeframe=%s limit=%s count=%s", symbol, timeframe, limit, len(candles))
             self.logger.debug("Latest candle %s: %s", symbol, candles[-1] if candles else None)
@@ -110,11 +121,16 @@ class BinanceClient:
         side_lower = side.lower()
         if side_lower not in {"buy", "sell"}:
             raise ValueError("side must be BUY or SELL")
+        if not self.is_valid_symbol(symbol):
+            self.logger.warning("Invalid symbol skipped: %s", symbol)
+            raise ValueError(f"Invalid exchange symbol: {symbol}")
         precise_amount = float(self.exchange.amount_to_precision(symbol, amount))
         self.logger.info("Order request %s %s amount=%s", symbol, side.upper(), precise_amount)
         try:
             order = await self.exchange.create_market_order(symbol, side_lower, precise_amount)
-            self.logger.info("Order placed %s %s %s", symbol, side.upper(), precise_amount)
+            self.logger.info("Order response received %s %s %s status=%s", symbol, side.upper(), precise_amount, order.get("status"))
+            if order.get("status") != "closed":
+                self.logger.warning("Order not filled: %s status=%s", symbol, order.get("status"))
             self.logger.debug("Raw order response: %s", order)
             return order
         except Exception as exc:
@@ -125,3 +141,16 @@ class BinanceClient:
         """Close an open spot position using the opposite side."""
         close_side = "SELL" if side.upper() == "BUY" else "BUY"
         return await self.create_order(symbol, close_side, amount)
+
+    def is_valid_symbol(self, symbol: str) -> bool:
+        """Return whether a symbol is known by the loaded exchange markets."""
+        symbols = self.exchange.symbols
+        if symbols is None:
+            self.logger.warning("Symbol validation requested before markets loaded: %s", symbol)
+            return False
+        return symbol in symbols
+
+    @staticmethod
+    def is_order_filled(order: dict[str, Any]) -> bool:
+        """Return True only when CCXT reports the order as fully closed."""
+        return order.get("status") == "closed"

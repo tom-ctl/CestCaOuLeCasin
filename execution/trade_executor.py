@@ -41,6 +41,9 @@ class TradeExecutor:
                 "details": order.get("id", ""),
             },
         )
+        if order.get("status") != "closed":
+            self.logger.warning("Order not filled: %s entry status=%s", plan.symbol, order.get("status"))
+            return order
         await self.position_manager.add_position(plan)
         self.logger.info("Trade executed %s %s amount=%s order_id=%s", plan.symbol, plan.side, plan.amount, order.get("id", "n/a"))
         return order

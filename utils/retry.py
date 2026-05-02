@@ -30,6 +30,9 @@ def async_retry(
                     return await func(*args, **kwargs)
                 except Exception as exc:  # noqa: BLE001 - exchange libraries raise broad errors.
                     last_error = exc
+                    if "does not have market symbol" in str(exc) or "Invalid exchange symbol" in str(exc):
+                        logger.warning("Non-retryable symbol error in %s: %s", func.__name__, exc)
+                        break
                     if attempt == attempts:
                         break
                     logger.warning(
