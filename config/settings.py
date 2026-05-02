@@ -1,0 +1,100 @@
+"""Application configuration loaded from environment variables."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+def _as_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _as_symbols(value: str | None) -> list[str]:
+    if not value:
+        return ["BTC/USDT"]
+    return [symbol.strip().upper() for symbol in value.split(",") if symbol.strip()]
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Runtime settings for exchange, strategy, risk, and Telegram."""
+
+    binance_api_key: str
+    binance_api_secret: str
+    binance_test_mode: bool
+    telegram_bot_token: str
+    telegram_chat_id: int | None
+    trading_symbols: list[str]
+    timeframe: str
+    poll_interval_seconds: int
+    confirmation_timeout_seconds: int
+    risk_per_trade: float
+    max_position_pct: float
+    stop_loss_pct: float
+    take_profit_pct: float
+    min_confidence: float
+    breakout_lookback: int
+    volume_lookback: int
+    volume_spike_multiplier: float
+    trade_log_path: Path
+    log_level: str
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        """Create settings from `.env` and process environment values."""
+        load_dotenv()
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        return cls(
+            binance_api_key=os.getenv("BINANCE_API_KEY", ""),
+            binance_api_secret=os.getenv("BINANCE_API_SECRET", ""),
+            binance_test_mode=_as_bool(os.getenv("BINANCE_TEST_MODE"), True),
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=int(chat_id) if chat_id else None,
+            trading_symbols=_as_symbols(os.getenv("TRADING_SYMBOLS")),
+            timeframe=os.getenv("TIMEFRAME", "5m"),
+            poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "60")),
+            confirmation_timeout_seconds=int(os.getenv("CONFIRMATION_TIMEOUT_SECONDS", "300")),
+            risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.01")),
+            max_position_pct=float(os.getenv("MAX_POSITION_PCT", "0.25")),
+            stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "0.02")),
+            take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "0.04")),
+            min_confidence=float(os.getenv("MIN_CONFIDENCE", "7.0")),
+            breakout_lookback=int(os.getenv("BREAKOUT_LOOKBACK", "20")),
+            volume_lookback=int(os.getenv("VOLUME_LOOKBACK", "20")),
+            volume_spike_multiplier=float(os.getenv("VOLUME_SPIKE_MULTIPLIER", "1.8")),
+            trade_log_path=Path(os.getenv("TRADE_LOG_PATH", "logs/trades.csv")),
+            log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        )
+
+    def validate(self) -> None:
+        """Validate settings required for a runnable bot."""
+        missing = []
+        if not self.binance_api_key:
+            missing.append("BINANCE_API_KEY")
+        if not self.binance_api_secret:
+            missing.append("BINANCE_API_SECRET")
+        if not self.telegram_bot_token:
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if self.telegram_chat_id is None:
+            missing.append("TELEGRAM_CHAT_ID")
+        if missing:
+            joined = ", ".join(missing)
+            raise ValueError(f"Missing required environment variables: {joined}")
+        if not 0 < self.risk_per_trade <= 0.02:
+            raise ValueError("RISK_PER_TRADE must be between 0 and 0.02")
+        if not 0 < self.max_position_pct <= 1:
+            raise ValueError("MAX_POSITION_PCT must be between 0 and 1")
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Return cached application settings."""
+    return Settings.from_env()
