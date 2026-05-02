@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Application, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from config import Settings
 from risk_management.risk_manager import PositionPlan
@@ -22,7 +23,13 @@ class TelegramTradeBot:
         self.logger = logging.getLogger(__name__)
         self.application = Application.builder().token(settings.telegram_bot_token).build()
         self.application.add_handler(CallbackQueryHandler(self._handle_callback))
+        self.application.add_handler(CommandHandler("sleep", self._handle_sleep_command))
         self._pending: dict[str, asyncio.Future[bool]] = {}
+        self._sleep_handler: Callable[[], Awaitable[None]] | None = None
+
+    def set_sleep_handler(self, handler: Callable[[], Awaitable[None]]) -> None:
+        """Register the application sleep-mode handler."""
+        self._sleep_handler = handler
 
     async def start(self) -> None:
         """Start Telegram polling."""
@@ -94,6 +101,18 @@ class TelegramTradeBot:
         accepted = action == "accept"
         future.set_result(accepted)
         await query.edit_message_text("Trade accepted." if accepted else "Trade rejected.")
+
+    async def _handle_sleep_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        _ = context
+        if update.effective_chat is None:
+            return
+        if self.settings.telegram_chat_id is not None and update.effective_chat.id != self.settings.telegram_chat_id:
+            await update.effective_chat.send_message("Unauthorized chat.")
+            return
+        if self._sleep_handler is None:
+            await update.effective_chat.send_message("Sleep handler is not configured.")
+            return
+        await self._sleep_handler()
 
     @staticmethod
     def _format_signal(signal: MarketSignal, plan: PositionPlan) -> str:

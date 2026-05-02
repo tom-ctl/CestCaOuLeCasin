@@ -35,11 +35,14 @@ class Settings:
     timeframe: str
     poll_interval_seconds: int
     confirmation_timeout_seconds: int
+    sleep_exit_delay_seconds: int
     risk_per_trade: float
     account_equity_override: float | None
     max_position_pct: float
     stop_loss_pct: float
     take_profit_pct: float
+    sleep_stop_loss_pct: float
+    sleep_take_profit_pct: float
     min_confidence: float
     breakout_lookback: int
     volume_lookback: int
@@ -63,6 +66,7 @@ class Settings:
             timeframe=os.getenv("TIMEFRAME", "5m"),
             poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "60")),
             confirmation_timeout_seconds=int(os.getenv("CONFIRMATION_TIMEOUT_SECONDS", "300")),
+            sleep_exit_delay_seconds=int(os.getenv("SLEEP_EXIT_DELAY_SECONDS", "7200")),
             risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.01")),
             account_equity_override=(
                 float(os.getenv("ACCOUNT_EQUITY_OVERRIDE", ""))
@@ -72,6 +76,8 @@ class Settings:
             max_position_pct=float(os.getenv("MAX_POSITION_PCT", "0.25")),
             stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "0.02")),
             take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "0.04")),
+            sleep_stop_loss_pct=float(os.getenv("SLEEP_STOP_LOSS_PCT", "0.005")),
+            sleep_take_profit_pct=float(os.getenv("SLEEP_TAKE_PROFIT_PCT", "0.015")),
             min_confidence=float(os.getenv("MIN_CONFIDENCE", "7.0")),
             breakout_lookback=int(os.getenv("BREAKOUT_LOOKBACK", "20")),
             volume_lookback=int(os.getenv("VOLUME_LOOKBACK", "20")),
@@ -100,6 +106,12 @@ class Settings:
             raise ValueError("MAX_POSITION_PCT must be between 0 and 1")
         if self.account_equity_override is not None and self.account_equity_override <= 0:
             raise ValueError("ACCOUNT_EQUITY_OVERRIDE must be greater than zero when set")
+        if self.sleep_exit_delay_seconds <= 0:
+            raise ValueError("SLEEP_EXIT_DELAY_SECONDS must be greater than zero")
+        if not 0 < self.sleep_stop_loss_pct < self.stop_loss_pct:
+            raise ValueError("SLEEP_STOP_LOSS_PCT must be greater than 0 and tighter than STOP_LOSS_PCT")
+        if not 0 < self.sleep_take_profit_pct < self.take_profit_pct:
+            raise ValueError("SLEEP_TAKE_PROFIT_PCT must be greater than 0 and lower than TAKE_PROFIT_PCT")
 
 
 @lru_cache(maxsize=1)

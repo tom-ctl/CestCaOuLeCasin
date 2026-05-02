@@ -8,6 +8,7 @@ Production-oriented starter bot for Binance via CCXT, Telegram confirmations, si
 - Uses Binance sandbox mode when `BINANCE_TEST_MODE=true`
 - Detects recent high/low breakouts with volume spike confirmation
 - Sends Telegram inline buttons: `ACCEPT` / `REJECT`
+- Supports Telegram `/sleep` for controlled safe exit
 - Executes confirmed market orders
 - Monitors open positions and closes on SL or TP
 - Logs trades to CSV
@@ -44,6 +45,14 @@ To test with a fixed virtual account size, regardless of the sandbox wallet bala
 ```env
 ACCOUNT_EQUITY_OVERRIDE=2000
 ```
+
+Sleep mode can be triggered from Telegram:
+
+```text
+/sleep
+```
+
+When active, the bot immediately stops generating new trades, tightens tracked position exits to `SLEEP_STOP_LOSS_PCT` and `SLEEP_TAKE_PROFIT_PCT`, then closes all tracked positions and sells non-USDT balances after `SLEEP_EXIT_DELAY_SECONDS`.
 
 ## Run
 

@@ -10,7 +10,9 @@ from contextlib import suppress
 from config import get_settings
 from exchange import BinanceClient
 from execution import TradeExecutor
+from position_manager import PositionManager
 from risk_management import RiskManager
+from state import bot_state
 from strategy import SignalEngine
 from telegram_bot import TelegramTradeBot
 from utils.logging import configure_logging
@@ -30,12 +32,20 @@ class TradingBot:
         self.risk_manager = RiskManager(self.settings)
         self.telegram = TelegramTradeBot(self.settings)
         self.trade_logger = TradeLogger(self.settings.trade_log_path)
+        self.position_manager = PositionManager(
+            self.exchange,
+            self.trade_logger,
+            self.settings.sleep_stop_loss_pct,
+            self.settings.sleep_take_profit_pct,
+        )
         self.executor = TradeExecutor(
             self.exchange,
             self.trade_logger,
-            self.settings.poll_interval_seconds,
+            self.position_manager,
         )
+        self.telegram.set_sleep_handler(self.activate_sleep_mode)
         self._stop = asyncio.Event()
+        self._sleep_exit_task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
         """Run the main trading loop."""
@@ -51,6 +61,10 @@ class TradingBot:
                         timeout=self.settings.poll_interval_seconds,
                     )
         finally:
+            if self._sleep_exit_task is not None:
+                self._sleep_exit_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._sleep_exit_task
             await self.telegram.stop()
             await self.exchange.close()
 
@@ -59,6 +73,17 @@ class TradingBot:
         self._stop.set()
 
     async def _scan_once(self) -> None:
+        exits = await self.position_manager.monitor_open_positions()
+        for exit_result in exits:
+            await self.telegram.send_trade_report(
+                f"Position closed for {exit_result['symbol']}: "
+                f"{exit_result['reason']} at {exit_result['price']:.8f}"
+            )
+
+        if bot_state["sleep_mode"]:
+            self.logger.info("Sleep mode active: skipping new trade generation")
+            return
+
         for symbol in self.settings.trading_symbols:
             try:
                 await self._process_symbol(symbol)
@@ -88,15 +113,47 @@ class TradingBot:
         if not accepted:
             self.trade_logger.log("rejected", {**signal_result.__dict__, "status": "rejected"})
             return
+        if bot_state["sleep_mode"]:
+            self.trade_logger.log("rejected", {**signal_result.__dict__, "status": "sleep_mode"})
+            await self.telegram.send_trade_report(f"Trade skipped for {symbol}: sleep mode is active.")
+            return
 
         order = await self.executor.execute(plan)
         await self.telegram.send_trade_report(
             f"Entry submitted for {plan.symbol} {plan.side} amount={plan.amount}. Order ID: {order.get('id', 'n/a')}"
         )
-        exit_result = await self.executor.monitor_position(plan)
+
+    async def activate_sleep_mode(self) -> None:
+        """Activate sleep mode, tighten positions, and schedule full exit."""
+        if bot_state["sleep_mode"]:
+            await self.telegram.send_trade_report("Sleep mode is already active.")
+            return
+
+        bot_state["sleep_mode"] = True
+        self.logger.warning("Sleep mode activated")
+        self.trade_logger.log("sleep_mode", {"status": "active", "details": "telegram_command"})
         await self.telegram.send_trade_report(
-            f"Position closed for {plan.symbol}: {exit_result['reason']} at {exit_result['price']:.8f}"
+            "🛑 Sleep mode activated\n"
+            "- No new trades\n"
+            "- Positions tightening\n"
+            "- Full exit in 2 hours"
         )
+        tightened = await self.position_manager.tighten_positions()
+        self.logger.info("Tightened %s open positions for sleep mode", len(tightened))
+        if self._sleep_exit_task is None or self._sleep_exit_task.done():
+            self._sleep_exit_task = asyncio.create_task(self._sleep_countdown_and_exit())
+
+    async def _sleep_countdown_and_exit(self) -> None:
+        await asyncio.sleep(self.settings.sleep_exit_delay_seconds)
+        self.logger.warning("Sleep mode countdown elapsed; closing all positions")
+        try:
+            await self.position_manager.close_all_positions()
+            self.trade_logger.log("sleep_exit", {"status": "closed", "details": "countdown_elapsed"})
+            await self.telegram.send_trade_report("✅ All positions closed\nBot can be safely stopped")
+        except Exception as exc:  # noqa: BLE001 - report final exit failures to user.
+            self.logger.exception("Sleep mode final exit failed: %s", exc)
+            self.trade_logger.log("sleep_exit", {"status": "failed", "details": str(exc)})
+            await self.telegram.send_trade_report(f"Sleep mode exit failed: {exc}")
 
 
 async def main() -> None:
