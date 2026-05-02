@@ -26,6 +26,7 @@ def _as_symbols(value: str | None) -> list[str]:
 class Settings:
     """Runtime settings for exchange, strategy, risk, and Telegram."""
 
+    test_mode: bool
     binance_api_key: str
     binance_api_secret: str
     binance_test_mode: bool
@@ -36,6 +37,10 @@ class Settings:
     poll_interval_seconds: int
     confirmation_timeout_seconds: int
     sleep_exit_delay_seconds: int
+    test_poll_interval_seconds: int
+    test_sleep_exit_delay_seconds: int
+    test_trade_amount: float
+    test_force_signal: bool
     risk_per_trade: float
     account_equity_override: float | None
     max_position_pct: float
@@ -55,8 +60,10 @@ class Settings:
         """Create settings from `.env` and process environment values."""
         load_dotenv()
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        test_mode = _as_bool(os.getenv("TEST_MODE"), False)
 
         return cls(
+            test_mode=test_mode,
             binance_api_key=os.getenv("BINANCE_API_KEY", ""),
             binance_api_secret=os.getenv("BINANCE_API_SECRET", ""),
             binance_test_mode=_as_bool(os.getenv("BINANCE_TEST_MODE"), True),
@@ -67,6 +74,10 @@ class Settings:
             poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "60")),
             confirmation_timeout_seconds=int(os.getenv("CONFIRMATION_TIMEOUT_SECONDS", "300")),
             sleep_exit_delay_seconds=int(os.getenv("SLEEP_EXIT_DELAY_SECONDS", "7200")),
+            test_poll_interval_seconds=int(os.getenv("TEST_POLL_INTERVAL_SECONDS", "10")),
+            test_sleep_exit_delay_seconds=int(os.getenv("TEST_SLEEP_EXIT_DELAY_SECONDS", "600")),
+            test_trade_amount=float(os.getenv("TEST_TRADE_AMOUNT", "0.001")),
+            test_force_signal=_as_bool(os.getenv("TEST_FORCE_SIGNAL"), True),
             risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.01")),
             account_equity_override=(
                 float(os.getenv("ACCOUNT_EQUITY_OVERRIDE", ""))
@@ -86,6 +97,21 @@ class Settings:
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         )
 
+    @property
+    def runtime_log_level(self) -> str:
+        """Return the effective log level for the current runtime mode."""
+        return "DEBUG" if self.test_mode else self.log_level
+
+    @property
+    def runtime_poll_interval_seconds(self) -> int:
+        """Return the effective loop interval for the current runtime mode."""
+        return self.test_poll_interval_seconds if self.test_mode else self.poll_interval_seconds
+
+    @property
+    def runtime_sleep_exit_delay_seconds(self) -> int:
+        """Return the effective sleep-mode countdown for the current runtime mode."""
+        return self.test_sleep_exit_delay_seconds if self.test_mode else self.sleep_exit_delay_seconds
+
     def validate(self) -> None:
         """Validate settings required for a runnable bot."""
         missing = []
@@ -100,6 +126,8 @@ class Settings:
         if missing:
             joined = ", ".join(missing)
             raise ValueError(f"Missing required environment variables: {joined}")
+        if self.test_mode and not self.binance_test_mode:
+            raise ValueError("TEST_MODE requires BINANCE_TEST_MODE=true")
         if not 0 < self.risk_per_trade <= 0.02:
             raise ValueError("RISK_PER_TRADE must be between 0 and 0.02")
         if not 0 < self.max_position_pct <= 1:
@@ -108,6 +136,12 @@ class Settings:
             raise ValueError("ACCOUNT_EQUITY_OVERRIDE must be greater than zero when set")
         if self.sleep_exit_delay_seconds <= 0:
             raise ValueError("SLEEP_EXIT_DELAY_SECONDS must be greater than zero")
+        if self.test_poll_interval_seconds <= 0:
+            raise ValueError("TEST_POLL_INTERVAL_SECONDS must be greater than zero")
+        if self.test_sleep_exit_delay_seconds <= 0:
+            raise ValueError("TEST_SLEEP_EXIT_DELAY_SECONDS must be greater than zero")
+        if self.test_trade_amount <= 0:
+            raise ValueError("TEST_TRADE_AMOUNT must be greater than zero")
         if not 0 < self.sleep_stop_loss_pct < self.stop_loss_pct:
             raise ValueError("SLEEP_STOP_LOSS_PCT must be greater than 0 and tighter than STOP_LOSS_PCT")
         if not 0 < self.sleep_take_profit_pct < self.take_profit_pct:

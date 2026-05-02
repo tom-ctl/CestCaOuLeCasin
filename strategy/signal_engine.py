@@ -56,6 +56,9 @@ class SignalEngine:
             confidence = self._confidence(recent_low, latest_close, volume_ratio)
             return self._build_signal(symbol, "SELL", latest_close, confidence, "low breakdown with volume spike")
 
+        if self.settings.test_mode and self.settings.test_force_signal:
+            return self._build_signal(symbol, "BUY", latest_close, 9.0, "forced test-mode signal")
+
         return None
 
     def sentiment_placeholder(self, symbol: str) -> float:

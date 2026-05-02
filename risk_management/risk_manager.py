@@ -51,6 +51,8 @@ class RiskManager:
         max_notional = usdt_equity * self.settings.max_position_pct
         allocation_based_amount = max_notional / signal.entry_price
         amount = min(risk_based_amount, allocation_based_amount)
+        if self.settings.test_mode:
+            amount = min(amount, self.settings.test_trade_amount)
 
         if amount <= 0:
             raise ValueError("Calculated position amount must be greater than zero")

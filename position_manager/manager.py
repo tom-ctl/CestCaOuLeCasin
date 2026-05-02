@@ -31,11 +31,13 @@ class PositionManager:
         self,
         exchange: BinanceClient,
         trade_logger: TradeLogger,
+        test_mode: bool,
         sleep_stop_loss_pct: float,
         sleep_take_profit_pct: float,
     ) -> None:
         self.exchange = exchange
         self.trade_logger = trade_logger
+        self.test_mode = test_mode
         self.sleep_stop_loss_pct = sleep_stop_loss_pct
         self.sleep_take_profit_pct = sleep_take_profit_pct
         self.logger = logging.getLogger(__name__)
@@ -111,8 +113,8 @@ class PositionManager:
                 self.logger.exception("Failed to close tracked position %s: %s", position.symbol, exc)
 
         balance = await self.exchange.get_balance()
-        free_balances = balance.get("free", {})
-        for asset, raw_amount in free_balances.items():
+        total_balances = balance.get("total", {})
+        for asset, raw_amount in total_balances.items():
             if asset == "USDT":
                 continue
             amount = float(raw_amount or 0)
@@ -142,12 +144,7 @@ class PositionManager:
         for position in await self.get_open_positions():
             try:
                 price = await self.exchange.get_price(position.symbol)
-                if position.side == "BUY":
-                    stop_loss = price * (1 - self.sleep_stop_loss_pct)
-                    take_profit = price * (1 + self.sleep_take_profit_pct)
-                else:
-                    stop_loss = price * (1 + self.sleep_stop_loss_pct)
-                    take_profit = price * (1 - self.sleep_take_profit_pct)
+                stop_loss, take_profit = self._tightened_exits(position, price)
                 updated = await self.update_position(
                     position.symbol,
                     stop_loss=round(stop_loss, 8),
@@ -162,6 +159,10 @@ class PositionManager:
             except Exception as exc:  # noqa: BLE001 - continue tightening other positions.
                 self.logger.exception("Failed to tighten %s: %s", position.symbol, exc)
         return tightened
+
+    async def manage_positions(self) -> list[dict[str, Any]]:
+        """Compatibility wrapper for loop-based position management."""
+        return await self.monitor_open_positions()
 
     async def monitor_open_positions(self) -> list[dict[str, Any]]:
         """Check tracked positions and close any that hit logic-based SL/TP."""
@@ -226,3 +227,13 @@ class PositionManager:
             if price <= take_profit:
                 return True, "take_profit"
         return False, ""
+
+    def _tightened_exits(self, position: OpenPosition, current_price: float) -> tuple[float, float]:
+        if self.test_mode:
+            if position.side == "BUY":
+                return position.entry_price * 0.999, position.entry_price * 1.005
+            return position.entry_price * 1.001, position.entry_price * 0.995
+
+        if position.side == "BUY":
+            return current_price * (1 - self.sleep_stop_loss_pct), current_price * (1 + self.sleep_take_profit_pct)
+        return current_price * (1 + self.sleep_stop_loss_pct), current_price * (1 - self.sleep_take_profit_pct)

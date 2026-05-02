@@ -46,6 +46,18 @@ To test with a fixed virtual account size, regardless of the sandbox wallet bala
 ACCOUNT_EQUITY_OVERRIDE=2000
 ```
 
+For a short end-to-end test run:
+
+```env
+TEST_MODE=True
+TEST_POLL_INTERVAL_SECONDS=10
+TEST_SLEEP_EXIT_DELAY_SECONDS=600
+TEST_TRADE_AMOUNT=0.001
+TEST_FORCE_SIGNAL=true
+```
+
+In test mode the bot requires Binance sandbox mode, caps the base order size, uses DEBUG logging, and can force a BUY test signal when normal breakout conditions are absent.
+
 Sleep mode can be triggered from Telegram:
 
 ```text
@@ -53,6 +65,11 @@ Sleep mode can be triggered from Telegram:
 ```
 
 When active, the bot immediately stops generating new trades, tightens tracked position exits to `SLEEP_STOP_LOSS_PCT` and `SLEEP_TAKE_PROFIT_PCT`, then closes all tracked positions and sells non-USDT balances after `SLEEP_EXIT_DELAY_SECONDS`.
+
+With `TEST_MODE=True`, `/sleep` uses a 10-minute countdown and aggressive entry-based exits:
+
+- BUY SL: `entry * 0.999`
+- BUY TP: `entry * 1.005`
 
 ## Run
 
