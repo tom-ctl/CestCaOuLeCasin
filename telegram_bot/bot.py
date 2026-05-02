@@ -23,13 +23,36 @@ class TelegramTradeBot:
         self.logger = get_logger("telegram")
         self.application = Application.builder().token(settings.telegram_bot_token).build()
         self.application.add_handler(CallbackQueryHandler(self._handle_callback))
+        self.application.add_handler(CommandHandler("start", self._handle_start_command))
+        self.application.add_handler(CommandHandler("status", self._handle_status_command))
+        self.application.add_handler(CommandHandler("wallet", self._handle_wallet_command))
+        self.application.add_handler(CommandHandler("start_trading", self._handle_start_trading_command))
+        self.application.add_handler(CommandHandler("stop_trading", self._handle_stop_trading_command))
         self.application.add_handler(CommandHandler("sleep", self._handle_sleep_command))
         self._pending: dict[str, asyncio.Future[bool]] = {}
         self._sleep_handler: Callable[[], Awaitable[None]] | None = None
+        self._status_provider: Callable[[], str] | None = None
+        self._wallet_provider: Callable[[], str] | None = None
+        self._start_trading_handler: Callable[[], Awaitable[str] | str] | None = None
+        self._stop_trading_handler: Callable[[], Awaitable[str] | str] | None = None
 
     def set_sleep_handler(self, handler: Callable[[], Awaitable[None]]) -> None:
         """Register the application sleep-mode handler."""
         self._sleep_handler = handler
+
+    def set_preprod_handlers(
+        self,
+        *,
+        status_provider: Callable[[], str],
+        wallet_provider: Callable[[], str],
+        start_trading_handler: Callable[[], Awaitable[str] | str],
+        stop_trading_handler: Callable[[], Awaitable[str] | str],
+    ) -> None:
+        """Register preprod status and wallet command handlers."""
+        self._status_provider = status_provider
+        self._wallet_provider = wallet_provider
+        self._start_trading_handler = start_trading_handler
+        self._stop_trading_handler = stop_trading_handler
 
     async def start(self) -> None:
         """Start Telegram polling."""
@@ -130,6 +153,64 @@ class TelegramTradeBot:
             await update.effective_chat.send_message("Sleep handler is not configured.")
             return
         await self._sleep_handler()
+
+    async def _handle_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        _ = context
+        if not await self._is_authorized(update):
+            return
+        status = self._status_provider() if self._status_provider else "Bot started."
+        await update.effective_chat.send_message(f"Preprod bot online.\n\n{status}")
+        self.logger.info("Telegram command handled /start")
+
+    async def _handle_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        _ = context
+        if not await self._is_authorized(update):
+            return
+        status = self._status_provider() if self._status_provider else "Status provider is not configured."
+        await update.effective_chat.send_message(status)
+        self.logger.info("Telegram command handled /status")
+
+    async def _handle_wallet_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        _ = context
+        if not await self._is_authorized(update):
+            return
+        message = self._wallet_provider() if self._wallet_provider else "Wallet provider is not configured."
+        await update.effective_chat.send_message(message)
+        self.logger.info("Telegram command handled /wallet")
+
+    async def _handle_start_trading_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        _ = context
+        if not await self._is_authorized(update):
+            return
+        message = await self._call_text_handler(self._start_trading_handler, "Start trading handler is not configured.")
+        await update.effective_chat.send_message(message)
+        self.logger.info("Telegram command handled /start_trading")
+
+    async def _handle_stop_trading_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        _ = context
+        if not await self._is_authorized(update):
+            return
+        message = await self._call_text_handler(self._stop_trading_handler, "Stop trading handler is not configured.")
+        await update.effective_chat.send_message(message)
+        self.logger.info("Telegram command handled /stop_trading")
+
+    async def _is_authorized(self, update: Update) -> bool:
+        if update.effective_chat is None:
+            return False
+        if self.settings.telegram_chat_id is not None and update.effective_chat.id != self.settings.telegram_chat_id:
+            await update.effective_chat.send_message("Unauthorized chat.")
+            self.logger.warning("Unauthorized Telegram command chat_id=%s", update.effective_chat.id)
+            return False
+        return True
+
+    @staticmethod
+    async def _call_text_handler(handler: Callable[[], Awaitable[str] | str] | None, fallback: str) -> str:
+        if handler is None:
+            return fallback
+        result = handler()
+        if hasattr(result, "__await__"):
+            return await result
+        return result
 
     @staticmethod
     def _format_signal(signal: MarketSignal, plan: PositionPlan) -> str:

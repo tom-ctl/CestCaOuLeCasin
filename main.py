@@ -18,6 +18,8 @@ from telegram_bot import TelegramTradeBot
 from utils.logging import configure_logging
 from utils.logger import get_logger
 from utils.trade_logger import TradeLogger
+from trading_engine import TradingEngine
+from wallet import Wallet
 
 
 class TradingBot:
@@ -166,14 +168,14 @@ class TradingBot:
         self.trade_logger.log("sleep_mode", {"status": "active", "details": "telegram_command"})
         if self.settings.test_mode:
             await self.telegram.send_trade_report(
-                "🧪 TEST MODE ACTIVATED (10 min)\n"
+                "\U0001f9ea TEST MODE ACTIVATED (10 min)\n"
                 "- No new trades\n"
                 "- Tight SL/TP\n"
                 "- Full exit in 10 minutes"
             )
         else:
             await self.telegram.send_trade_report(
-                "🛑 Sleep mode activated\n"
+                "\U0001f6d1 Sleep mode activated\n"
                 "- No new trades\n"
                 "- Positions tightening\n"
                 "- Full exit in 2 hours"
@@ -202,18 +204,93 @@ class TradingBot:
             self.trade_logger.log("sleep_exit", {"status": "closed", "details": "countdown_elapsed"})
             self.logger.info("Sleep mode final liquidation completed")
             if self.settings.test_mode:
-                await self.telegram.send_trade_report("✅ Test complete: all positions closed")
+                await self.telegram.send_trade_report("\u2705 Test complete: all positions closed")
             else:
-                await self.telegram.send_trade_report("✅ All positions closed\nBot can be safely stopped")
+                await self.telegram.send_trade_report("\u2705 All positions closed\nBot can be safely stopped")
         except Exception as exc:  # noqa: BLE001 - report final exit failures to user.
             self.logger.exception("Sleep mode final exit failed: %s", exc)
             self.trade_logger.log("sleep_exit", {"status": "failed", "details": str(exc)})
             await self.telegram.send_trade_report(f"Sleep mode exit failed: {exc}")
 
+class PreprodTradingBot:
+    """Run the Telegram bot with a virtual wallet and simulated trading engine."""
+
+    def __init__(self) -> None:
+        self.settings = get_settings()
+        self.settings.validate()
+        configure_logging(self.settings.runtime_log_level)
+        self.logger = get_logger("preprod")
+        self.wallet = Wallet(initial_balance=self.settings.virtual_initial_balance)
+        self.engine = TradingEngine(self.wallet, self.settings)
+        self.telegram = TelegramTradeBot(self.settings)
+        self.telegram.set_preprod_handlers(
+            status_provider=self.engine.status_message,
+            wallet_provider=self.wallet.format_wallet_message,
+            start_trading_handler=self.start_trading,
+            stop_trading_handler=self.stop_trading,
+        )
+        self.telegram.set_sleep_handler(self.activate_sleep_mode)
+        self._stop = asyncio.Event()
+        self._loop_count = 0
+
+    async def run(self) -> None:
+        """Run the simulated preprod trading loop."""
+        await self.telegram.start()
+        self.logger.info(
+            "Preprod bot started | initial_balance=%.2f | loop_seconds=%s | symbols=%s",
+            self.settings.virtual_initial_balance,
+            self.settings.preprod_loop_interval_seconds,
+            self.settings.trading_symbols,
+        )
+        try:
+            while not self._stop.is_set():
+                self._loop_count += 1
+                self.logger.info(
+                    "Preprod loop %s | positions=%s | equity=%.2f | sleep=%s",
+                    self._loop_count,
+                    len(self.wallet.open_positions),
+                    self.wallet.total_equity,
+                    bot_state["sleep_mode"],
+                )
+                await self.engine.tick()
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        self._stop.wait(),
+                        timeout=self.settings.preprod_loop_interval_seconds,
+                    )
+        finally:
+            await self.telegram.stop()
+
+    def stop(self) -> None:
+        """Request graceful shutdown."""
+        self._stop.set()
+
+    def start_trading(self) -> str:
+        """Enable simulated trading from Telegram."""
+        self.engine.start_trading()
+        return "Trading simulation started."
+
+    def stop_trading(self) -> str:
+        """Disable simulated trading from Telegram."""
+        self.engine.stop_trading()
+        return "Trading simulation stopped. Existing positions will keep updating."
+
+    async def activate_sleep_mode(self) -> None:
+        """Activate preprod sleep mode and close simulated positions."""
+        self.engine.activate_sleep()
+        closed = self.wallet.close_all_positions()
+        self.logger.warning("Preprod sleep mode closed positions=%s", len(closed))
+        await self.telegram.send_trade_report(
+            "Sleep mode activated.\n"
+            "No new simulated trades.\n"
+            f"Closed simulated positions: {len(closed)}"
+        )
+
 
 async def main() -> None:
     """Program entrypoint."""
-    bot = TradingBot()
+    settings = get_settings()
+    bot = PreprodTradingBot() if settings.preprod_mode else TradingBot()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         with suppress(NotImplementedError):

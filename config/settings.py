@@ -26,6 +26,7 @@ def _as_symbols(value: str | None) -> list[str]:
 class Settings:
     """Runtime settings for exchange, strategy, risk, and Telegram."""
 
+    preprod_mode: bool
     test_mode: bool
     binance_api_key: str
     binance_api_secret: str
@@ -41,6 +42,10 @@ class Settings:
     test_sleep_exit_delay_seconds: int
     test_trade_amount: float
     test_force_signal: bool
+    virtual_initial_balance: float
+    preprod_loop_interval_seconds: int
+    preprod_trade_notional: float
+    preprod_max_positions: int
     risk_per_trade: float
     account_equity_override: float | None
     max_position_pct: float
@@ -60,9 +65,11 @@ class Settings:
         """Create settings from `.env` and process environment values."""
         load_dotenv()
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        preprod_mode = _as_bool(os.getenv("PREPROD_MODE"), True)
         test_mode = _as_bool(os.getenv("TEST_MODE"), False)
 
         return cls(
+            preprod_mode=preprod_mode,
             test_mode=test_mode,
             binance_api_key=os.getenv("BINANCE_API_KEY", ""),
             binance_api_secret=os.getenv("BINANCE_API_SECRET", ""),
@@ -78,6 +85,10 @@ class Settings:
             test_sleep_exit_delay_seconds=int(os.getenv("TEST_SLEEP_EXIT_DELAY_SECONDS", "600")),
             test_trade_amount=float(os.getenv("TEST_TRADE_AMOUNT", "0.001")),
             test_force_signal=_as_bool(os.getenv("TEST_FORCE_SIGNAL"), True),
+            virtual_initial_balance=float(os.getenv("VIRTUAL_INITIAL_BALANCE", "10000")),
+            preprod_loop_interval_seconds=int(os.getenv("PREPROD_LOOP_INTERVAL_SECONDS", "5")),
+            preprod_trade_notional=float(os.getenv("PREPROD_TRADE_NOTIONAL", "100")),
+            preprod_max_positions=int(os.getenv("PREPROD_MAX_POSITIONS", "3")),
             risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.01")),
             account_equity_override=(
                 float(os.getenv("ACCOUNT_EQUITY_OVERRIDE", ""))
@@ -100,7 +111,7 @@ class Settings:
     @property
     def runtime_log_level(self) -> str:
         """Return the effective log level for the current runtime mode."""
-        return "DEBUG" if self.test_mode else self.log_level
+        return "DEBUG" if self.preprod_mode or self.test_mode else self.log_level
 
     @property
     def runtime_poll_interval_seconds(self) -> int:
@@ -115,9 +126,9 @@ class Settings:
     def validate(self) -> None:
         """Validate settings required for a runnable bot."""
         missing = []
-        if not self.binance_api_key:
+        if not self.preprod_mode and not self.binance_api_key:
             missing.append("BINANCE_API_KEY")
-        if not self.binance_api_secret:
+        if not self.preprod_mode and not self.binance_api_secret:
             missing.append("BINANCE_API_SECRET")
         if not self.telegram_bot_token:
             missing.append("TELEGRAM_BOT_TOKEN")
@@ -128,6 +139,14 @@ class Settings:
             raise ValueError(f"Missing required environment variables: {joined}")
         if self.test_mode and not self.binance_test_mode:
             raise ValueError("TEST_MODE requires BINANCE_TEST_MODE=true")
+        if self.virtual_initial_balance <= 0:
+            raise ValueError("VIRTUAL_INITIAL_BALANCE must be greater than zero")
+        if self.preprod_loop_interval_seconds <= 0:
+            raise ValueError("PREPROD_LOOP_INTERVAL_SECONDS must be greater than zero")
+        if self.preprod_trade_notional <= 0:
+            raise ValueError("PREPROD_TRADE_NOTIONAL must be greater than zero")
+        if self.preprod_max_positions <= 0:
+            raise ValueError("PREPROD_MAX_POSITIONS must be greater than zero")
         if not 0 < self.risk_per_trade <= 0.02:
             raise ValueError("RISK_PER_TRADE must be between 0 and 0.02")
         if not 0 < self.max_position_pct <= 1:

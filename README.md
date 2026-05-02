@@ -4,6 +4,7 @@ Production-oriented starter bot for Binance via CCXT, Telegram confirmations, si
 
 ## What It Does
 
+- Runs in preprod mode with a virtual wallet when `PREPROD_MODE=True`
 - Connects to Binance through `ccxt`
 - Uses Binance sandbox mode when `BINANCE_TEST_MODE=true`
 - Detects recent high/low breakouts with volume spike confirmation
@@ -57,6 +58,29 @@ TEST_FORCE_SIGNAL=true
 ```
 
 In test mode the bot requires Binance sandbox mode, caps the base order size, uses DEBUG logging, and can force a BUY test signal when normal breakout conditions are absent.
+
+For preprod dry runs with no real trades:
+
+```env
+PREPROD_MODE=True
+VIRTUAL_INITIAL_BALANCE=10000
+PREPROD_LOOP_INTERVAL_SECONDS=5
+PREPROD_TRADE_NOTIONAL=100
+PREPROD_MAX_POSITIONS=3
+```
+
+Preprod mode uses a virtual wallet, simulated prices, fake signals, simulated entries/exits, and Telegram monitoring commands. It does not initialize Binance or place CCXT orders.
+
+Telegram preprod commands:
+
+```text
+/start
+/status
+/wallet
+/start_trading
+/stop_trading
+/sleep
+```
 
 ## Logging
 
