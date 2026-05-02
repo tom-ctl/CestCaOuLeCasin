@@ -3,26 +3,18 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+
+import pandas as pd
 
 from config import Settings
 from state import bot_state
+from strategy import generate_signal
 from utils.logger import get_logger
 from wallet import Wallet
 
 
-@dataclass
-class SimulatedSignal:
-    """Fake signal used by the preprod engine."""
-
-    symbol: str
-    action: str
-    confidence: float
-    price: float
-
-
 class TradingEngine:
-    """Generate fake signals and manage simulated positions."""
+    """Generate permissive strategy signals and manage simulated positions."""
 
     def __init__(self, wallet: Wallet, settings: Settings) -> None:
         self.wallet = wallet
@@ -30,6 +22,10 @@ class TradingEngine:
         self.logger = get_logger("preprod_engine")
         self.trading_enabled = True
         self.prices = {symbol: self._initial_price(symbol) for symbol in settings.trading_symbols}
+        self.market_data = {
+            symbol: self._initial_market_data(symbol, self.prices[symbol])
+            for symbol in settings.trading_symbols
+        }
         self._loop_count = 0
 
     def start_trading(self) -> None:
@@ -67,9 +63,17 @@ class TradingEngine:
             )
             return
 
-        signal = self._generate_signal()
-        if signal is not None:
-            self._open_trade(signal)
+        for symbol in self.settings.trading_symbols:
+            signal = generate_signal(self.market_data[symbol])
+            self.logger.info(
+                "[SIGNAL] %s %s conf=%.2f reason=%s",
+                symbol,
+                signal["signal"],
+                signal["confidence"],
+                signal["reason"],
+            )
+            if signal["signal"] is not None and signal["confidence"] > 0.3:
+                self._open_trade(symbol, signal)
 
         self.logger.info(
             "Preprod loop %s | trading=%s | sleep=%s | positions=%s | equity=%.2f",
@@ -89,31 +93,39 @@ class TradingEngine:
             f"Equity: {self.wallet.total_equity:.2f} USDT"
         )
 
-    def _generate_signal(self) -> SimulatedSignal | None:
+    def _open_trade(self, symbol: str, signal: dict) -> None:
         if len(self.wallet.open_positions) >= self.settings.preprod_max_positions:
-            self.logger.debug("No fake signal: max positions reached")
-            return None
-        if self._loop_count == 1 or random.random() < 0.35:
-            symbol = random.choice(self.settings.trading_symbols)
-            signal = SimulatedSignal(symbol=symbol, action="BUY", confidence=random.uniform(6.5, 9.5), price=self.prices[symbol])
-            self.logger.info("Fake signal generated %s %s confidence=%.2f price=%.8f", signal.symbol, signal.action, signal.confidence, signal.price)
-            return signal
-        self.logger.debug("No fake signal this loop")
-        return None
-
-    def _open_trade(self, signal: SimulatedSignal) -> None:
-        if signal.action != "BUY":
-            self.logger.warning("Unsupported simulated action skipped: %s", signal.action)
+            self.logger.debug("Signal skipped: max positions reached")
             return
-        size = self.settings.preprod_trade_notional / signal.price
-        self.wallet.open_position(signal.symbol, signal.price, size)
-        self.logger.info("Preprod trade opened %s size=%.8f notional=%.2f", signal.symbol, size, self.settings.preprod_trade_notional)
+        side = str(signal["signal"])
+        price = self.prices[symbol]
+        size = self.settings.preprod_trade_notional / price
+        self.wallet.open_position(symbol, price, size, side)
+        self.logger.info(
+            "Preprod trade opened %s %s size=%.8f notional=%.2f confidence=%.2f",
+            symbol,
+            side,
+            size,
+            self.settings.preprod_trade_notional,
+            signal["confidence"],
+        )
 
     def _update_prices(self) -> None:
         for symbol, price in self.prices.items():
             move = random.uniform(-0.003, 0.003)
             new_price = max(price * (1 + move), 0.00000001)
             self.prices[symbol] = new_price
+            high = max(price, new_price) * (1 + random.uniform(0, 0.0008))
+            low = min(price, new_price) * (1 - random.uniform(0, 0.0008))
+            volume = random.uniform(80, 140)
+            self.market_data[symbol].loc[len(self.market_data[symbol])] = {
+                "open": price,
+                "high": high,
+                "low": low,
+                "close": new_price,
+                "volume": volume,
+            }
+            self.market_data[symbol] = self.market_data[symbol].tail(100).reset_index(drop=True)
             self.logger.debug("Simulated price %s %.8f -> %.8f", symbol, price, new_price)
 
     def _update_positions(self) -> None:
@@ -127,7 +139,7 @@ class TradingEngine:
             should_close = pnl_pct >= 0.6 or pnl_pct <= -0.4 or random.random() < 0.05
             if should_close:
                 trade = self.wallet.close_position(position, position.current_price)
-                self.logger.info("Preprod trade closed %s pnl=%.4f pnl_pct=%.2f", trade.symbol, trade.pnl, pnl_pct)
+                self.logger.info("Preprod trade closed %s %s pnl=%.4f pnl_pct=%.2f", trade.symbol, trade.side, trade.pnl, pnl_pct)
 
     @staticmethod
     def _initial_price(symbol: str) -> float:
@@ -140,3 +152,22 @@ class TradingEngine:
             "XRP": 0.6,
         }
         return defaults.get(base, 100.0)
+
+    @staticmethod
+    def _initial_market_data(symbol: str, start_price: float) -> pd.DataFrame:
+        rows = []
+        price = start_price
+        for _ in range(25):
+            move = random.uniform(-0.002, 0.002)
+            close = max(price * (1 + move), 0.00000001)
+            rows.append(
+                {
+                    "open": price,
+                    "high": max(price, close) * (1 + random.uniform(0, 0.0008)),
+                    "low": min(price, close) * (1 - random.uniform(0, 0.0008)),
+                    "close": close,
+                    "volume": random.uniform(80, 140),
+                }
+            )
+            price = close
+        return pd.DataFrame(rows, columns=["open", "high", "low", "close", "volume"])

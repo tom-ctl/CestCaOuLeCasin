@@ -125,7 +125,8 @@ class TradingBot:
         if signal_result is None:
             self.logger.debug("No signal for %s", symbol)
             return
-        if signal_result.confidence < self.settings.min_confidence:
+        minimum_confidence = 3.0 if self.settings.test_mode else self.settings.min_confidence
+        if signal_result.confidence < minimum_confidence:
             self.logger.warning(
                 "Ignoring %s signal below confidence threshold: %.2f",
                 symbol,

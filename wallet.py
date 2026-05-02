@@ -13,6 +13,7 @@ class VirtualPosition:
     """Open simulated position."""
 
     symbol: str
+    side: str
     entry_price: float
     current_price: float
     size: float
@@ -33,6 +34,7 @@ class TradeRecord:
     """Closed simulated trade."""
 
     symbol: str
+    side: str
     entry_price: float
     exit_price: float
     size: float
@@ -60,10 +62,11 @@ class Wallet:
         self.logger = get_logger("wallet")
         self.logger.info("Virtual wallet initialized balance=%.2f USDT", self.initial_balance)
 
-    def open_position(self, symbol: str, entry_price: float, size: float) -> VirtualPosition:
-        """Open a simulated long position."""
+    def open_position(self, symbol: str, entry_price: float, size: float, side: str = "BUY") -> VirtualPosition:
+        """Open a simulated position."""
         position = VirtualPosition(
             symbol=symbol,
+            side=side.upper(),
             entry_price=entry_price,
             current_price=entry_price,
             size=size,
@@ -71,13 +74,16 @@ class Wallet:
             timestamp=datetime.now(UTC),
         )
         self.open_positions.append(position)
-        self.logger.info("Simulated trade opened %s entry=%.8f size=%.8f", symbol, entry_price, size)
+        self.logger.info("Simulated trade opened %s %s entry=%.8f size=%.8f", symbol, position.side, entry_price, size)
         return position
 
     def update_position_price(self, position: VirtualPosition, current_price: float) -> None:
         """Update current price and unrealized PnL for one position."""
         position.current_price = current_price
-        position.pnl = (current_price - position.entry_price) * position.size
+        if position.side == "SELL":
+            position.pnl = (position.entry_price - current_price) * position.size
+        else:
+            position.pnl = (current_price - position.entry_price) * position.size
         self.logger.debug(
             "Position updated %s entry=%.8f current=%.8f size=%.8f pnl=%.4f",
             position.symbol,
@@ -94,6 +100,7 @@ class Wallet:
         self.open_positions.remove(position)
         trade = TradeRecord(
             symbol=position.symbol,
+            side=position.side,
             entry_price=position.entry_price,
             exit_price=exit_price,
             size=position.size,
@@ -102,7 +109,7 @@ class Wallet:
             closed_at=datetime.now(UTC),
         )
         self.trade_history.append(trade)
-        self.logger.info("Simulated trade closed %s exit=%.8f pnl=%.4f", trade.symbol, trade.exit_price, trade.pnl)
+        self.logger.info("Simulated trade closed %s %s exit=%.8f pnl=%.4f", trade.symbol, trade.side, trade.exit_price, trade.pnl)
         return trade
 
     def close_all_positions(self) -> list[TradeRecord]:
@@ -172,7 +179,7 @@ class Wallet:
                 pos_sign = "+" if position.pnl >= 0 else ""
                 lines.extend(
                     [
-                        f"- {position.symbol.replace('/', '')} | size: {position.size:.8f}",
+                        f"- {position.symbol.replace('/', '')} {position.side} | size: {position.size:.8f}",
                         f"  entry: {position.entry_price:.8f}",
                         f"  current: {position.current_price:.8f}",
                         f"  pnl: {pos_sign}{position.pnl_pct:.2f}%",
