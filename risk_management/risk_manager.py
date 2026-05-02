@@ -30,6 +30,8 @@ class RiskManager:
 
     def estimate_usdt_equity(self, balance: dict) -> float:
         """Estimate available USDT equity from a CCXT balance response."""
+        if self.settings.account_equity_override is not None:
+            return self.settings.account_equity_override
         usdt = balance.get("USDT", {})
         free = usdt.get("free")
         total = usdt.get("total")

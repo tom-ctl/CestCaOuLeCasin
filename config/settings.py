@@ -36,6 +36,7 @@ class Settings:
     poll_interval_seconds: int
     confirmation_timeout_seconds: int
     risk_per_trade: float
+    account_equity_override: float | None
     max_position_pct: float
     stop_loss_pct: float
     take_profit_pct: float
@@ -63,6 +64,11 @@ class Settings:
             poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "60")),
             confirmation_timeout_seconds=int(os.getenv("CONFIRMATION_TIMEOUT_SECONDS", "300")),
             risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.01")),
+            account_equity_override=(
+                float(os.getenv("ACCOUNT_EQUITY_OVERRIDE", ""))
+                if os.getenv("ACCOUNT_EQUITY_OVERRIDE", "").strip()
+                else None
+            ),
             max_position_pct=float(os.getenv("MAX_POSITION_PCT", "0.25")),
             stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "0.02")),
             take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "0.04")),
@@ -92,6 +98,8 @@ class Settings:
             raise ValueError("RISK_PER_TRADE must be between 0 and 0.02")
         if not 0 < self.max_position_pct <= 1:
             raise ValueError("MAX_POSITION_PCT must be between 0 and 1")
+        if self.account_equity_override is not None and self.account_equity_override <= 0:
+            raise ValueError("ACCOUNT_EQUITY_OVERRIDE must be greater than zero when set")
 
 
 @lru_cache(maxsize=1)

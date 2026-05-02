@@ -39,6 +39,12 @@ Switch to live trading only after testing:
 BINANCE_TEST_MODE=false
 ```
 
+To test with a fixed virtual account size, regardless of the sandbox wallet balance:
+
+```env
+ACCOUNT_EQUITY_OVERRIDE=2000
+```
+
 ## Run
 
 ```powershell

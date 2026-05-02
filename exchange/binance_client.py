@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import aiohttp.connector
+import aiohttp.resolver
 import ccxt.async_support as ccxt
 
 from config import Settings
@@ -17,6 +19,7 @@ class BinanceClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.logger = logging.getLogger(__name__)
+        self._use_system_dns_resolver()
         self.exchange = ccxt.binance(
             {
                 "apiKey": settings.binance_api_key,
@@ -28,6 +31,11 @@ class BinanceClient:
         if settings.binance_test_mode:
             self.exchange.set_sandbox_mode(True)
             self.logger.info("Binance sandbox mode enabled")
+
+    @staticmethod
+    def _use_system_dns_resolver() -> None:
+        """Force aiohttp to use the OS resolver instead of aiodns on Windows."""
+        aiohttp.connector.DefaultResolver = aiohttp.resolver.ThreadedResolver
 
     async def close(self) -> None:
         """Close CCXT network resources."""
