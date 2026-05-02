@@ -58,6 +58,16 @@ TEST_FORCE_SIGNAL=true
 
 In test mode the bot requires Binance sandbox mode, caps the base order size, uses DEBUG logging, and can force a BUY test signal when normal breakout conditions are absent.
 
+## Logging
+
+The bot uses Python logging with console output and `logs.txt`:
+
+```text
+[2026-01-01 12:00:00] [INFO] [EXECUTION] Order placed BTC/USDT BUY 0.001
+```
+
+With `TEST_MODE=True`, logs run at DEBUG level and include each loop iteration, strategy indicator values, raw API responses, position status, Telegram actions, order attempts, and sleep-mode liquidation steps.
+
 Sleep mode can be triggered from Telegram:
 
 ```text

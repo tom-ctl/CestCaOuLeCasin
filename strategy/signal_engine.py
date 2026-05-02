@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from statistics import mean
 
 from config import Settings
+from utils.logger import get_logger
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class SignalEngine:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.logger = get_logger("strategy")
 
     def analyze(self, symbol: str, candles: list[list[float]]) -> MarketSignal | None:
         """Return a signal when breakout and volume criteria are satisfied."""
@@ -33,6 +35,7 @@ class SignalEngine:
         volume_lookback = self.settings.volume_lookback
         minimum = max(lookback, volume_lookback) + 2
         if len(candles) < minimum:
+            self.logger.warning("Skipping signal %s: insufficient candles count=%s required=%s", symbol, len(candles), minimum)
             return None
 
         recent_closed = candles[-(lookback + 1) : -1]
@@ -47,18 +50,41 @@ class SignalEngine:
 
         volume_ratio = latest_volume / average_volume if average_volume else 0.0
         has_volume_spike = volume_ratio >= self.settings.volume_spike_multiplier
+        high_breakout = latest_close > recent_high
+        low_breakdown = latest_close < recent_low
 
-        if latest_close > recent_high and has_volume_spike:
+        self.logger.debug(
+            "Signal calc %s | close=%s recent_high=%s recent_low=%s volume=%s avg_volume=%s volume_ratio=%.4f high_breakout=%s low_breakdown=%s volume_spike=%s",
+            symbol,
+            latest_close,
+            recent_high,
+            recent_low,
+            latest_volume,
+            average_volume,
+            volume_ratio,
+            high_breakout,
+            low_breakdown,
+            has_volume_spike,
+        )
+
+        if high_breakout and has_volume_spike:
             confidence = self._confidence(latest_close, recent_high, volume_ratio)
-            return self._build_signal(symbol, "BUY", latest_close, confidence, "high breakout with volume spike")
+            signal = self._build_signal(symbol, "BUY", latest_close, confidence, "high breakout with volume spike")
+            self.logger.info("Signal detected %s %s confidence=%.2f reason=%s", signal.symbol, signal.action, signal.confidence, signal.reason)
+            return signal
 
-        if latest_close < recent_low and has_volume_spike:
+        if low_breakdown and has_volume_spike:
             confidence = self._confidence(recent_low, latest_close, volume_ratio)
-            return self._build_signal(symbol, "SELL", latest_close, confidence, "low breakdown with volume spike")
+            signal = self._build_signal(symbol, "SELL", latest_close, confidence, "low breakdown with volume spike")
+            self.logger.info("Signal detected %s %s confidence=%.2f reason=%s", signal.symbol, signal.action, signal.confidence, signal.reason)
+            return signal
 
         if self.settings.test_mode and self.settings.test_force_signal:
-            return self._build_signal(symbol, "BUY", latest_close, 9.0, "forced test-mode signal")
+            signal = self._build_signal(symbol, "BUY", latest_close, 9.0, "forced test-mode signal")
+            self.logger.info("Signal detected %s %s confidence=%.2f reason=%s", signal.symbol, signal.action, signal.confidence, signal.reason)
+            return signal
 
+        self.logger.debug("No signal %s | breakout=%s breakdown=%s volume_spike=%s", symbol, high_breakout, low_breakdown, has_volume_spike)
         return None
 
     def sentiment_placeholder(self, symbol: str) -> float:

@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from utils.logger import get_logger
+
 
 class TradeLogger:
     """Append trade events to a CSV file."""
@@ -27,12 +29,14 @@ class TradeLogger:
     ]
 
     def __init__(self, path: Path) -> None:
+        self.logger = get_logger("trade_log")
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists():
             with self.path.open("w", newline="", encoding="utf-8") as file:
                 writer = csv.DictWriter(file, fieldnames=self.fieldnames)
                 writer.writeheader()
+            self.logger.info("Trade log created: %s", self.path)
 
     def log(self, event: str, payload: dict[str, Any] | Any) -> None:
         """Write a trade event to CSV."""
@@ -56,3 +60,4 @@ class TradeLogger:
         with self.path.open("a", newline="", encoding="utf-8") as file:
             writer = csv.DictWriter(file, fieldnames=self.fieldnames)
             writer.writerow(row)
+        self.logger.debug("Trade event logged: %s", row)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from config import Settings
 from strategy import MarketSignal
+from utils.logger import get_logger
 
 
 @dataclass(frozen=True)
@@ -27,15 +28,19 @@ class RiskManager:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.logger = get_logger("risk")
 
     def estimate_usdt_equity(self, balance: dict) -> float:
         """Estimate available USDT equity from a CCXT balance response."""
         if self.settings.account_equity_override is not None:
+            self.logger.debug("Using account equity override: %s", self.settings.account_equity_override)
             return self.settings.account_equity_override
         usdt = balance.get("USDT", {})
         free = usdt.get("free")
         total = usdt.get("total")
-        return float(free if free is not None else total or 0.0)
+        equity = float(free if free is not None else total or 0.0)
+        self.logger.debug("Estimated USDT equity free=%s total=%s equity=%s", free, total, equity)
+        return equity
 
     def build_position_plan(self, signal: MarketSignal, usdt_equity: float) -> PositionPlan:
         """Build a position plan capped by risk and max account allocation."""
@@ -53,9 +58,22 @@ class RiskManager:
         amount = min(risk_based_amount, allocation_based_amount)
         if self.settings.test_mode:
             amount = min(amount, self.settings.test_trade_amount)
+            self.logger.debug("Test mode amount cap applied: %s", amount)
 
         if amount <= 0:
+            self.logger.warning("Skipped trade: calculated position amount <= 0")
             raise ValueError("Calculated position amount must be greater than zero")
+
+        self.logger.info(
+            "Position plan %s %s amount=%s entry=%s sl=%s tp=%s risk=%s",
+            signal.symbol,
+            signal.action,
+            round(amount, 8),
+            signal.entry_price,
+            signal.stop_loss,
+            signal.take_profit,
+            round(risk_amount, 2),
+        )
 
         return PositionPlan(
             symbol=signal.symbol,

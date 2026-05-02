@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import logging
 from collections.abc import Awaitable, Callable
 from typing import ParamSpec, TypeVar
 
@@ -20,7 +19,7 @@ def async_retry(
     """Retry an async function with exponential backoff."""
 
     def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
-        logger = logging.getLogger(func.__module__)
+        logger = get_logger("retry")
 
         @functools.wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -43,8 +42,10 @@ def async_retry(
                     await asyncio.sleep(wait)
                     wait *= backoff
             assert last_error is not None
+            logger.error("Retry exhausted for %s after %s attempts: %s", func.__name__, attempts, last_error)
             raise last_error
 
         return wrapper
 
     return decorator
+from utils.logger import get_logger

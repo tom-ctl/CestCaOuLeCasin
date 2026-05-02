@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import signal
 from contextlib import suppress
+from datetime import UTC, datetime
 
 from config import get_settings
 from exchange import BinanceClient
@@ -16,6 +16,7 @@ from state import bot_state
 from strategy import SignalEngine
 from telegram_bot import TelegramTradeBot
 from utils.logging import configure_logging
+from utils.logger import get_logger
 from utils.trade_logger import TradeLogger
 
 
@@ -26,7 +27,7 @@ class TradingBot:
         self.settings = get_settings()
         self.settings.validate()
         configure_logging(self.settings.runtime_log_level)
-        self.logger = logging.getLogger(__name__)
+        self.logger = get_logger("main")
         self.exchange = BinanceClient(self.settings)
         self.signal_engine = SignalEngine(self.settings)
         self.risk_manager = RiskManager(self.settings)
@@ -47,12 +48,19 @@ class TradingBot:
         self.telegram.set_sleep_handler(self.activate_sleep_mode)
         self._stop = asyncio.Event()
         self._sleep_exit_task: asyncio.Task[None] | None = None
+        self._loop_count = 0
 
     async def run(self) -> None:
         """Run the main trading loop."""
         await self.exchange.load_markets()
         await self.telegram.start()
-        self.logger.info("Trading bot started")
+        self.logger.info(
+            "Trading bot started | test_mode=%s | sandbox=%s | poll_seconds=%s | sleep_exit_seconds=%s",
+            self.settings.test_mode,
+            self.settings.binance_test_mode,
+            self.settings.runtime_poll_interval_seconds,
+            self.settings.runtime_sleep_exit_delay_seconds,
+        )
         try:
             while not self._stop.is_set():
                 await self._scan_once()
@@ -74,6 +82,19 @@ class TradingBot:
         self._stop.set()
 
     async def _scan_once(self) -> None:
+        self._loop_count += 1
+        positions = await self.position_manager.get_open_positions()
+        self.logger.info(
+            "Loop %s | time=%s | positions=%s | sleep=%s | mode=%s",
+            self._loop_count,
+            datetime.now(UTC).isoformat(),
+            len(positions),
+            bot_state["sleep_mode"],
+            "sleep" if bot_state["sleep_mode"] else "normal",
+        )
+        if self.settings.test_mode:
+            self.logger.debug("Loop position snapshot: %s", positions)
+
         exits = await self.position_manager.manage_positions()
         for exit_result in exits:
             await self.telegram.send_trade_report(
@@ -100,7 +121,7 @@ class TradingBot:
             self.logger.debug("No signal for %s", symbol)
             return
         if signal_result.confidence < self.settings.min_confidence:
-            self.logger.info(
+            self.logger.warning(
                 "Ignoring %s signal below confidence threshold: %.2f",
                 symbol,
                 signal_result.confidence,
@@ -112,9 +133,11 @@ class TradingBot:
         plan = self.risk_manager.build_position_plan(signal_result, equity)
         accepted = await self.telegram.request_trade_confirmation(signal_result, plan)
         if not accepted:
+            self.logger.warning("Skipped trade %s %s: user rejected or timeout", signal_result.symbol, signal_result.action)
             self.trade_logger.log("rejected", {**signal_result.__dict__, "status": "rejected"})
             return
         if bot_state["sleep_mode"]:
+            self.logger.warning("Skipped trade %s: sleep mode activated before execution", symbol)
             self.trade_logger.log("rejected", {**signal_result.__dict__, "status": "sleep_mode"})
             await self.telegram.send_trade_report(f"Trade skipped for {symbol}: sleep mode is active.")
             return
@@ -131,7 +154,7 @@ class TradingBot:
             return
 
         bot_state["sleep_mode"] = True
-        self.logger.warning("Sleep mode activated")
+        self.logger.warning("Sleep mode activated - no new trades")
         self.trade_logger.log("sleep_mode", {"status": "active", "details": "telegram_command"})
         if self.settings.test_mode:
             await self.telegram.send_trade_report(
@@ -150,14 +173,16 @@ class TradingBot:
         tightened = await self.position_manager.tighten_positions()
         self.logger.info("Tightened %s open positions for sleep mode", len(tightened))
         if self._sleep_exit_task is None or self._sleep_exit_task.done():
+            self.logger.warning("Sleep mode timer started seconds=%s", self.settings.runtime_sleep_exit_delay_seconds)
             self._sleep_exit_task = asyncio.create_task(self._sleep_countdown_and_exit())
 
     async def _sleep_countdown_and_exit(self) -> None:
         await asyncio.sleep(self.settings.runtime_sleep_exit_delay_seconds)
-        self.logger.warning("Sleep mode countdown elapsed; closing all positions")
+        self.logger.warning("Sleep mode countdown elapsed; final liquidation starting")
         try:
             await self.position_manager.close_all_positions()
             self.trade_logger.log("sleep_exit", {"status": "closed", "details": "countdown_elapsed"})
+            self.logger.info("Sleep mode final liquidation completed")
             if self.settings.test_mode:
                 await self.telegram.send_trade_report("✅ Test complete: all positions closed")
             else:

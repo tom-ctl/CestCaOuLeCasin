@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from exchange import BinanceClient
 from risk_management.risk_manager import PositionPlan
+from utils.logger import get_logger
 from utils.trade_logger import TradeLogger
 
 
@@ -40,7 +40,7 @@ class PositionManager:
         self.test_mode = test_mode
         self.sleep_stop_loss_pct = sleep_stop_loss_pct
         self.sleep_take_profit_pct = sleep_take_profit_pct
-        self.logger = logging.getLogger(__name__)
+        self.logger = get_logger("positions")
         self._positions: list[OpenPosition] = []
         self._lock = asyncio.Lock()
 
@@ -57,7 +57,15 @@ class PositionManager:
         async with self._lock:
             self._positions = [item for item in self._positions if item.symbol != position.symbol]
             self._positions.append(position)
-        self.logger.info("Tracking position: %s", position)
+        self.logger.info(
+            "Position added %s %s entry=%s amount=%s sl=%s tp=%s",
+            position.symbol,
+            position.side,
+            position.entry_price,
+            position.amount,
+            position.stop_loss,
+            position.take_profit,
+        )
         return position
 
     async def update_position(self, symbol: str, **updates: float | str) -> OpenPosition | None:
@@ -69,7 +77,7 @@ class PositionManager:
             for key, value in updates.items():
                 if hasattr(position, key):
                     setattr(position, key, value)
-            self.logger.info("Updated position %s: %s", symbol, position)
+            self.logger.info("Position updated %s: %s", symbol, position)
             return position
 
     async def get_open_positions(self) -> list[OpenPosition]:
@@ -82,8 +90,10 @@ class PositionManager:
         async with self._lock:
             position = next((item for item in self._positions if item.symbol == symbol), None)
         if position is None:
+            self.logger.warning("Close skipped: no tracked position for %s", symbol)
             return None
 
+        self.logger.info("Closing position %s %s amount=%s", position.symbol, position.side, position.amount)
         order = await self._retry_order(
             position.symbol,
             "SELL" if position.side == "BUY" else "BUY",
@@ -99,10 +109,12 @@ class PositionManager:
                 "details": order.get("id", ""),
             },
         )
+        self.logger.info("Position closed %s order_id=%s", symbol, order.get("id", "n/a"))
         return order
 
     async def close_all_positions(self) -> list[dict[str, Any]]:
         """Close tracked positions and sell all non-USDT spot balances."""
+        self.logger.warning("Final liquidation started")
         results: list[dict[str, Any]] = []
         for position in await self.get_open_positions():
             try:
@@ -114,6 +126,7 @@ class PositionManager:
 
         balance = await self.exchange.get_balance()
         total_balances = balance.get("total", {})
+        self.logger.debug("Liquidation balance snapshot: %s", total_balances)
         for asset, raw_amount in total_balances.items():
             if asset == "USDT":
                 continue
@@ -122,6 +135,7 @@ class PositionManager:
                 continue
             symbol = f"{asset}/USDT"
             try:
+                self.logger.info("Converting balance to USDT %s amount=%s", symbol, amount)
                 order = await self._retry_order(symbol, "SELL", amount)
                 results.append(order)
                 self.trade_logger.log(
@@ -135,7 +149,8 @@ class PositionManager:
                     },
                 )
             except Exception as exc:  # noqa: BLE001 - pair may not exist or amount may be too small.
-                self.logger.warning("Could not convert %s balance to USDT: %s", asset, exc)
+                self.logger.warning("Non-tradable pair or low balance %s amount=%s: %s", symbol, amount, exc)
+        self.logger.warning("Final liquidation finished orders=%s", len(results))
         return results
 
     async def tighten_positions(self) -> list[OpenPosition]:
@@ -145,6 +160,15 @@ class PositionManager:
             try:
                 price = await self.exchange.get_price(position.symbol)
                 stop_loss, take_profit = self._tightened_exits(position, price)
+                self.logger.warning(
+                    "Sleep tightening %s price=%s old_sl=%s old_tp=%s new_sl=%s new_tp=%s",
+                    position.symbol,
+                    price,
+                    position.stop_loss,
+                    position.take_profit,
+                    stop_loss,
+                    take_profit,
+                )
                 updated = await self.update_position(
                     position.symbol,
                     stop_loss=round(stop_loss, 8),
@@ -170,6 +194,16 @@ class PositionManager:
         for position in await self.get_open_positions():
             try:
                 price = await self.exchange.get_price(position.symbol)
+                self.logger.debug(
+                    "Position status %s side=%s price=%s entry=%s amount=%s sl=%s tp=%s",
+                    position.symbol,
+                    position.side,
+                    price,
+                    position.entry_price,
+                    position.amount,
+                    position.stop_loss,
+                    position.take_profit,
+                )
                 should_close, reason = self._exit_reason(
                     position.side,
                     price,
@@ -178,6 +212,7 @@ class PositionManager:
                 )
                 if not should_close:
                     continue
+                self.logger.info("SL/TP triggered %s reason=%s price=%s", position.symbol, reason, price)
                 order = await self.close_position(position.symbol)
                 exits.append({"order": order, "reason": reason, "price": price, "symbol": position.symbol})
                 self.trade_logger.log(
@@ -197,10 +232,11 @@ class PositionManager:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
+                self.logger.info("Order attempt %s/%s %s %s amount=%s", attempt, attempts, symbol, side, amount)
                 return await self.exchange.create_order(symbol, side, amount)
             except Exception as exc:  # noqa: BLE001 - exchange libraries raise broad errors.
                 last_error = exc
-                self.logger.warning(
+                self.logger.error(
                     "Order attempt %s/%s failed for %s %s amount=%s: %s",
                     attempt,
                     attempts,
