@@ -12,7 +12,7 @@ Production-oriented starter bot for Binance via CCXT, Telegram confirmations, si
 - Supports Telegram `/sleep` for controlled safe exit
 - Executes confirmed market orders
 - Monitors open positions and closes on SL or TP
-- Logs trades to CSV
+- Logs live/testnet actions to CSV and preprod closed trades to SQLite (`trades.db`)
 
 ## Setup
 
@@ -57,19 +57,19 @@ TEST_TRADE_AMOUNT=0.001
 TEST_FORCE_SIGNAL=true
 ```
 
-In test mode the bot requires Binance sandbox mode, caps the base order size, uses DEBUG logging, and can force a BUY test signal when normal breakout conditions are absent.
+In test mode the bot requires Binance sandbox mode, caps the base order size, and uses DEBUG logging.
 
 For preprod dry runs with no real trades:
 
 ```env
 PREPROD_MODE=True
 VIRTUAL_INITIAL_BALANCE=10000
-PREPROD_LOOP_INTERVAL_SECONDS=5
+PREPROD_LOOP_INTERVAL_SECONDS=30
 PREPROD_TRADE_NOTIONAL=100
-PREPROD_MAX_POSITIONS=3
+PREPROD_MAX_POSITIONS=1
 ```
 
-Preprod mode uses a virtual wallet, simulated prices, fake signals, simulated entries/exits, and Telegram monitoring commands. It does not initialize Binance or place CCXT orders.
+Preprod mode uses a virtual wallet, simulated prices, strict EMA/RSI/volatility signals, simulated entries/exits, and Telegram monitoring commands. It does not initialize Binance or place CCXT orders.
 
 Telegram preprod commands:
 
@@ -98,7 +98,7 @@ Sleep mode can be triggered from Telegram:
 /sleep
 ```
 
-When active, the bot immediately stops generating new trades, tightens tracked position exits to `SLEEP_STOP_LOSS_PCT` and `SLEEP_TAKE_PROFIT_PCT`, then closes all tracked positions and sells non-USDT balances after `SLEEP_EXIT_DELAY_SECONDS`.
+When active, the bot immediately stops generating new trades, tightens tracked position exits to `SLEEP_STOP_LOSS_PCT` and `SLEEP_TAKE_PROFIT_PCT`, then closes only tracked positions after `SLEEP_EXIT_DELAY_SECONDS`.
 
 With `TEST_MODE=True`, `/sleep` uses a 10-minute countdown and aggressive entry-based exits:
 
@@ -115,6 +115,7 @@ python main.py
 
 - This starter is spot-oriented. A `SELL` signal will place a spot sell order and requires base asset inventory.
 - The bot only closes positions it created and tracks in memory. It does not liquidate arbitrary wallet balances.
+- Preprod closed trades are stored in `trades.db` with entry/exit prices, PnL, confidence, EMA9, EMA21, RSI, price change, trend strength, RSI distance, and score.
 - Orders are treated as active positions only when Binance/CCXT returns `status=closed`.
 - Invalid symbols are skipped before any order is attempted.
 - Never run live trading before validating symbol precision, minimum order sizes, and exchange permissions.

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from database import log_trade
 from utils.logger import get_logger
 
 
@@ -19,6 +20,19 @@ class VirtualPosition:
     size: float
     pnl: float
     timestamp: datetime
+    confidence: float = 0.0
+    ema9: float = 0.0
+    ema21: float = 0.0
+    rsi: float = 0.0
+    price_change: float = 0.0
+    trend_strength: float = 0.0
+    rsi_distance: float = 0.0
+    score: float = 0.0
+
+    @property
+    def open_time(self) -> datetime:
+        """Return the position open timestamp."""
+        return self.timestamp
 
     @property
     def pnl_pct(self) -> float:
@@ -41,6 +55,14 @@ class TradeRecord:
     pnl: float
     opened_at: datetime
     closed_at: datetime
+    confidence: float = 0.0
+    ema9: float = 0.0
+    ema21: float = 0.0
+    rsi: float = 0.0
+    price_change: float = 0.0
+    trend_strength: float = 0.0
+    rsi_distance: float = 0.0
+    score: float = 0.0
 
     @property
     def won(self) -> bool:
@@ -62,7 +84,22 @@ class Wallet:
         self.logger = get_logger("wallet")
         self.logger.info("Virtual wallet initialized balance=%.2f USDT", self.initial_balance)
 
-    def open_position(self, symbol: str, entry_price: float, size: float, side: str = "BUY") -> VirtualPosition:
+    def open_position(
+        self,
+        symbol: str,
+        entry_price: float,
+        size: float,
+        side: str = "BUY",
+        *,
+        confidence: float = 0.0,
+        ema9: float = 0.0,
+        ema21: float = 0.0,
+        rsi: float = 0.0,
+        price_change: float = 0.0,
+        trend_strength: float = 0.0,
+        rsi_distance: float = 0.0,
+        score: float = 0.0,
+    ) -> VirtualPosition:
         """Open a simulated position."""
         position = VirtualPosition(
             symbol=symbol,
@@ -72,6 +109,14 @@ class Wallet:
             size=size,
             pnl=0.0,
             timestamp=datetime.now(UTC),
+            confidence=confidence,
+            ema9=ema9,
+            ema21=ema21,
+            rsi=rsi,
+            price_change=price_change,
+            trend_strength=trend_strength,
+            rsi_distance=rsi_distance,
+            score=score,
         )
         self.open_positions.append(position)
         self.logger.info("Simulated trade opened %s %s entry=%.8f size=%.8f", symbol, position.side, entry_price, size)
@@ -107,8 +152,39 @@ class Wallet:
             pnl=position.pnl,
             opened_at=position.timestamp,
             closed_at=datetime.now(UTC),
+            confidence=position.confidence,
+            ema9=position.ema9,
+            ema21=position.ema21,
+            rsi=position.rsi,
+            price_change=position.price_change,
+            trend_strength=position.trend_strength,
+            rsi_distance=position.rsi_distance,
+            score=position.score,
         )
         self.trade_history.append(trade)
+        try:
+            log_trade(
+                {
+                    "timestamp_open": trade.opened_at.isoformat(),
+                    "timestamp_close": trade.closed_at.isoformat(),
+                    "symbol": trade.symbol,
+                    "side": trade.side,
+                    "entry_price": trade.entry_price,
+                    "exit_price": trade.exit_price,
+                    "pnl": trade.pnl,
+                    "pnl_pct": position.pnl_pct,
+                    "confidence": trade.confidence,
+                    "ema9": trade.ema9,
+                    "ema21": trade.ema21,
+                    "rsi": trade.rsi,
+                    "price_change": trade.price_change,
+                    "trend_strength": trade.trend_strength,
+                    "rsi_distance": trade.rsi_distance,
+                    "score": trade.score,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - wallet state must stay consistent if analytics logging fails.
+            self.logger.exception("SQLite trade logging failed for %s: %s", trade.symbol, exc)
         self.logger.info("Simulated trade closed %s %s exit=%.8f pnl=%.4f", trade.symbol, trade.side, trade.exit_price, trade.pnl)
         return trade
 

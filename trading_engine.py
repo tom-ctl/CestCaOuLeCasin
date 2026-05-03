@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 
 import pandas as pd
 
@@ -14,7 +15,11 @@ from wallet import Wallet
 
 
 class TradingEngine:
-    """Generate permissive strategy signals and manage simulated positions."""
+    """Generate strict rule-based strategy signals and manage simulated positions."""
+
+    MAX_POSITIONS = 1
+    TAKE_PROFIT = 0.005
+    STOP_LOSS = 0.005
 
     def __init__(self, wallet: Wallet, settings: Settings) -> None:
         self.wallet = wallet
@@ -27,6 +32,8 @@ class TradingEngine:
             for symbol in settings.trading_symbols
         }
         self._loop_count = 0
+        self.last_trade_time = 0.0
+        self.cooldown_seconds = 60
 
     def start_trading(self) -> None:
         """Enable simulated trade entries."""
@@ -66,13 +73,17 @@ class TradingEngine:
         for symbol in self.settings.trading_symbols:
             signal = generate_signal(self.market_data[symbol])
             self.logger.info(
-                "[SIGNAL] %s %s conf=%.2f reason=%s",
+                "[SIGNAL] %s %s conf=%.2f score=%.6f price_change=%.6f trend=%.6f rsi_distance=%.6f reason=%s",
                 symbol,
                 signal["signal"],
                 signal["confidence"],
+                signal.get("score", 0.0),
+                signal.get("price_change", 0.0),
+                signal.get("trend_strength", 0.0),
+                signal.get("rsi_distance", 0.0),
                 signal["reason"],
             )
-            if signal["signal"] is not None and signal["confidence"] > 0.3:
+            if signal["signal"] is not None and signal["confidence"] >= 0.8:
                 self._open_trade(symbol, signal)
 
         self.logger.info(
@@ -94,13 +105,35 @@ class TradingEngine:
         )
 
     def _open_trade(self, symbol: str, signal: dict) -> None:
-        if len(self.wallet.open_positions) >= self.settings.preprod_max_positions:
+        max_positions = min(self.MAX_POSITIONS, self.settings.preprod_max_positions)
+        if len(self.wallet.open_positions) >= max_positions:
             self.logger.debug("Signal skipped: max positions reached")
             return
         side = str(signal["signal"])
+        if self._cooldown_active():
+            remaining = self.cooldown_seconds - (time.time() - self.last_trade_time)
+            self.logger.debug("Signal skipped: cooldown active remaining=%.1fs", max(remaining, 0.0))
+            return
+        if self.already_have_position(symbol, side):
+            self.logger.warning("Signal skipped: already have %s %s position", symbol, side)
+            return
         price = self.prices[symbol]
         size = self.settings.preprod_trade_notional / price
-        self.wallet.open_position(symbol, price, size, side)
+        self.wallet.open_position(
+            symbol,
+            price,
+            size,
+            side,
+            confidence=float(signal.get("confidence", 0.0)),
+            ema9=float(signal.get("ema9", 0.0)),
+            ema21=float(signal.get("ema21", 0.0)),
+            rsi=float(signal.get("rsi", 0.0)),
+            price_change=float(signal.get("price_change", 0.0)),
+            trend_strength=float(signal.get("trend_strength", 0.0)),
+            rsi_distance=float(signal.get("rsi_distance", 0.0)),
+            score=float(signal.get("score", 0.0)),
+        )
+        self.last_trade_time = time.time()
         self.logger.info(
             "Preprod trade opened %s %s size=%.8f notional=%.2f confidence=%.2f",
             symbol,
@@ -109,6 +142,13 @@ class TradingEngine:
             self.settings.preprod_trade_notional,
             signal["confidence"],
         )
+
+    def already_have_position(self, symbol: str, side: str) -> bool:
+        """Return whether the wallet already has an open position with the same symbol and side."""
+        return any(position.symbol == symbol and position.side == side for position in self.wallet.open_positions)
+
+    def _cooldown_active(self) -> bool:
+        return time.time() - self.last_trade_time < self.cooldown_seconds
 
     def _update_prices(self) -> None:
         for symbol, price in self.prices.items():
@@ -135,11 +175,25 @@ class TradingEngine:
 
     def _close_positions_if_needed(self) -> None:
         for position in list(self.wallet.open_positions):
-            pnl_pct = position.pnl_pct
-            should_close = pnl_pct >= 0.6 or pnl_pct <= -0.4 or random.random() < 0.05
-            if should_close:
+            pnl_ratio = position.pnl_pct / 100
+            if pnl_ratio >= self.TAKE_PROFIT:
                 trade = self.wallet.close_position(position, position.current_price)
-                self.logger.info("Preprod trade closed %s %s pnl=%.4f pnl_pct=%.2f", trade.symbol, trade.side, trade.pnl, pnl_pct)
+                self.logger.info(
+                    "Preprod trade closed %s %s reason=take_profit pnl=%.4f pnl_pct=%.2f",
+                    trade.symbol,
+                    trade.side,
+                    trade.pnl,
+                    position.pnl_pct,
+                )
+            elif pnl_ratio <= -self.STOP_LOSS:
+                trade = self.wallet.close_position(position, position.current_price)
+                self.logger.info(
+                    "Preprod trade closed %s %s reason=stop_loss pnl=%.4f pnl_pct=%.2f",
+                    trade.symbol,
+                    trade.side,
+                    trade.pnl,
+                    position.pnl_pct,
+                )
 
     @staticmethod
     def _initial_price(symbol: str) -> float:

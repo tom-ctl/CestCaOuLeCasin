@@ -8,6 +8,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 
 from config import get_settings
+from database import init_db
 from exchange import BinanceClient
 from execution import TradeExecutor
 from position_manager import PositionManager
@@ -291,6 +292,8 @@ class PreprodTradingBot:
 async def main() -> None:
     """Program entrypoint."""
     settings = get_settings()
+    configure_logging(settings.runtime_log_level)
+    init_db()
     bot = PreprodTradingBot() if settings.preprod_mode else TradingBot()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

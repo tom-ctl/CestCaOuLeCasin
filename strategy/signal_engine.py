@@ -12,10 +12,28 @@ from utils.logger import get_logger
 
 
 def generate_signal(df: pd.DataFrame) -> dict[str, Any]:
-    """Generate very permissive EMA/RSI/momentum scalping signals."""
+    """Generate strict EMA/RSI/volatility scalping signals."""
+    def result(signal: str | None, confidence: float, reason: str, **metrics: float) -> dict[str, Any]:
+        defaults = {
+            "ema9": 0.0,
+            "ema21": 0.0,
+            "rsi": 0.0,
+            "price_change": 0.0,
+            "trend_strength": 0.0,
+            "rsi_distance": 0.0,
+            "score": 0.0,
+        }
+        defaults.update(metrics)
+        return {
+            "signal": signal,
+            "confidence": round(min(max(confidence, 0.0), 1.0), 3),
+            "reason": reason,
+            **defaults,
+        }
+
     required = {"open", "high", "low", "close", "volume"}
     if df is None or not required.issubset(df.columns) or len(df) < 20:
-        return {"signal": None, "confidence": 0.0, "reason": "Not enough valid data"}
+        return result(None, 0.0, "Not enough valid data")
 
     data = df.loc[:, ["open", "high", "low", "close", "volume"]].astype(float)
     close = data["close"]
@@ -29,7 +47,10 @@ def generate_signal(df: pd.DataFrame) -> dict[str, Any]:
     avg_gain = gain.ewm(alpha=1 / 14, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / 14, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, pd.NA)
-    rsi = (100 - (100 / (1 + rs))).fillna(50)
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.mask((avg_loss == 0) & (avg_gain > 0), 100)
+    rsi = rsi.mask((avg_gain == 0) & (avg_loss > 0), 0)
+    rsi = rsi.fillna(50)
 
     current_close = float(close.iloc[-1])
     previous_close = float(close.iloc[-2])
@@ -37,63 +58,54 @@ def generate_signal(df: pd.DataFrame) -> dict[str, Any]:
     current_ema21 = float(ema21.iloc[-1])
     current_rsi = float(rsi.iloc[-1])
     if any(pd.isna(value) for value in (current_close, previous_close, current_ema9, current_ema21, current_rsi)):
-        return {"signal": None, "confidence": 0.0, "reason": "Indicator contains NaN"}
+        return result(None, 0.0, "Indicator contains NaN")
+    if previous_close <= 0 or current_close <= 0:
+        return result(None, 0.0, "Invalid close price")
 
-    buy_conditions = {
-        "EMA9 > EMA21": current_ema9 > current_ema21,
-        "RSI > 50": current_rsi > 50,
-        "close > previous close": current_close > previous_close,
+    price_change = abs(current_close - previous_close) / previous_close
+    trend_strength = abs(current_ema9 - current_ema21) / current_close
+    rsi_distance = abs(current_rsi - 50) / 50
+    score = (0.5 * trend_strength) + (0.3 * rsi_distance) + (0.2 * price_change)
+    metrics = {
+        "ema9": current_ema9,
+        "ema21": current_ema21,
+        "rsi": current_rsi,
+        "price_change": price_change,
+        "trend_strength": trend_strength,
+        "rsi_distance": rsi_distance,
+        "score": score,
     }
-    sell_conditions = {
-        "EMA9 < EMA21": current_ema9 < current_ema21,
-        "RSI < 50": current_rsi < 50,
-        "close < previous close": current_close < previous_close,
-    }
 
-    buy_confidence = (
-        (0.3 if buy_conditions["EMA9 > EMA21"] else 0.0)
-        + (0.3 if buy_conditions["RSI > 50"] else 0.0)
-        + (0.4 if buy_conditions["close > previous close"] else 0.0)
-    )
-    sell_confidence = (
-        (0.3 if sell_conditions["EMA9 < EMA21"] else 0.0)
-        + (0.3 if sell_conditions["RSI < 50"] else 0.0)
-        + (0.4 if sell_conditions["close < previous close"] else 0.0)
-    )
+    if 45 < current_rsi < 55:
+        return result(None, 0.0, "RSI range filter", **metrics)
+    if price_change < 0.001:
+        return result(None, 0.0, "Low volatility filter", **metrics)
+    if trend_strength < 0.0015:
+        return result(None, 0.0, "No trend filter", **metrics)
+    if score < 0.001:
+        return result(None, 0.0, "Low score filter", **metrics)
 
-    if buy_confidence <= 0 and sell_confidence <= 0:
-        return {"signal": None, "confidence": 0.0, "reason": "No permissive condition matched"}
+    confidence = min(score / 0.01, 1.0)
+    if confidence < 0.8:
+        return result(None, confidence, "Low confidence filter", **metrics)
 
-    if buy_confidence > sell_confidence:
-        matched = [name for name, matched_condition in buy_conditions.items() if matched_condition]
-        return {
-            "signal": "BUY",
-            "confidence": round(min(buy_confidence, 1.0), 3),
-            "reason": ", ".join(matched),
-        }
+    if current_ema9 > current_ema21 and current_rsi > 55 and trend_strength > 0.0015 and price_change > 0.001:
+        return result(
+            "BUY",
+            confidence,
+            "EMA9 > EMA21, RSI > 55, trend strong, volatility confirmed",
+            **metrics,
+        )
 
-    if sell_confidence > buy_confidence:
-        matched = [name for name, matched_condition in sell_conditions.items() if matched_condition]
-        return {
-            "signal": "SELL",
-            "confidence": round(min(sell_confidence, 1.0), 3),
-            "reason": ", ".join(matched),
-        }
+    if current_ema9 < current_ema21 and current_rsi < 45 and trend_strength > 0.0015 and price_change > 0.001:
+        return result(
+            "SELL",
+            confidence,
+            "EMA9 < EMA21, RSI < 45, trend strong, volatility confirmed",
+            **metrics,
+        )
 
-    if current_close >= previous_close:
-        matched = [name for name, matched_condition in buy_conditions.items() if matched_condition]
-        return {
-            "signal": "BUY",
-            "confidence": round(min(buy_confidence, 1.0), 3),
-            "reason": ", ".join(matched) or "Tie resolved by non-negative close momentum",
-        }
-
-    return {
-        "signal": "SELL",
-        "confidence": round(min(sell_confidence, 1.0), 3),
-        "reason": ", ".join(name for name, matched_condition in sell_conditions.items() if matched_condition)
-        or "Tie resolved by negative close momentum",
-    }
+    return result(None, confidence, "Strict entry conditions not met", **metrics)
 
 
 @dataclass(frozen=True)
@@ -117,7 +129,7 @@ class SignalEngine:
         self.logger = get_logger("strategy")
 
     def analyze(self, symbol: str, candles: list[list[float]]) -> MarketSignal | None:
-        """Return a scalping signal when permissive EMA, RSI, or momentum conditions align."""
+        """Return a scalping signal when strict EMA, RSI, and volatility conditions align."""
         if len(candles) < 20:
             self.logger.warning("Skipping signal %s: insufficient candles count=%s required=20", symbol, len(candles))
             return None

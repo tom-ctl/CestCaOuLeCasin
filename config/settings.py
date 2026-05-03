@@ -86,9 +86,9 @@ class Settings:
             test_trade_amount=float(os.getenv("TEST_TRADE_AMOUNT", "0.001")),
             test_force_signal=_as_bool(os.getenv("TEST_FORCE_SIGNAL"), True),
             virtual_initial_balance=float(os.getenv("VIRTUAL_INITIAL_BALANCE", "10000")),
-            preprod_loop_interval_seconds=int(os.getenv("PREPROD_LOOP_INTERVAL_SECONDS", "5")),
+            preprod_loop_interval_seconds=max(30, int(os.getenv("PREPROD_LOOP_INTERVAL_SECONDS", "30"))),
             preprod_trade_notional=float(os.getenv("PREPROD_TRADE_NOTIONAL", "100")),
-            preprod_max_positions=int(os.getenv("PREPROD_MAX_POSITIONS", "3")),
+            preprod_max_positions=int(os.getenv("PREPROD_MAX_POSITIONS", "1")),
             risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.01")),
             account_equity_override=(
                 float(os.getenv("ACCOUNT_EQUITY_OVERRIDE", ""))
